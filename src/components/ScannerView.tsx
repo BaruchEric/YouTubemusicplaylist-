@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   BarChart3,
   Check,
   ChevronDown,
@@ -19,10 +20,13 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Sparkles,
+  Tags,
   Trash2,
   Upload,
+  X,
 } from 'lucide-react';
-import type { LocalTrack, Playlist, WatchedFolderInfo } from '../types/music';
+import type { LocalTrack, Playlist, TrackPlayStats, WatchedFolderInfo } from '../types/music';
 import {
   exportCatalogToCSV,
   exportCatalogToJSON,
@@ -34,26 +38,33 @@ import {
   inferTrackGenre,
   type InferredGenreResult,
 } from '../utils/genreInference';
+import { evaluateSmartTrackSearch } from '../utils/smartSearch';
 import {
   buildTrackYouTubeMusicUrl,
   formatDuration,
   formatFileSize,
+  formatRelativeTime,
   formatTotalRuntime,
   triggerFileDownload,
 } from '../utils/youtubeLinks';
 import { DuplicateFinderPanel } from './DuplicateFinderPanel';
+import { LibraryCleanupPanel } from './LibraryCleanupPanel';
 import { TrackStatisticsPanel } from './TrackStatisticsPanel';
 
 const STUDIO_BANNER_SRC = '/src/assets/images/studio_audio_banner_1795114389740.jpg';
 
 type TrackFilter = 'all' | 'unmatched' | 'matched' | 'missing';
+type TrackSort = 'default' | 'most-played' | 'recently-played' | 'title';
 
 interface ScannerViewProps {
   tracks: LocalTrack[];
   playlists: Playlist[];
+  playStats: Record<string, TrackPlayStats>;
   initialFilter?: TrackFilter;
   initialGenre?: string;
   initialGroupByGenre?: boolean;
+  initialSearchQuery?: string;
+  initialOpenCleanup?: boolean;
   watchedFolder: WatchedFolderInfo | null;
   autoWatchIntervalSec: 0 | 30 | 120 | 300;
   isScanning: boolean;
@@ -71,9 +82,11 @@ interface ScannerViewProps {
   onChangeAutoWatch: (sec: 0 | 30 | 120 | 300) => void;
   onComputeMissingHashes: () => void;
   onRequestRemoveDuplicates: (removeIds: string[], remapToKeep: Record<string, string>) => void;
+  onRemoveMissingTracks: (trackIds: string[]) => void;
   onPlayTrack: (trackId: string, queueIds: string[]) => void;
   onPlayList: (trackIds: string[], options?: { shuffle?: boolean }) => void;
   onInspectTrack: (trackId: string) => void;
+  onOpenBatchTagEditor: (trackIds: string[], contextLabel: string) => void;
   onCreatePlaylistFromTracks: (trackIds: string[]) => void;
   onAddTracksToPlaylist: (playlistId: string, trackIds: string[]) => void;
   onRequestDeleteTracks: (trackIds: string[]) => void;
@@ -83,9 +96,12 @@ interface ScannerViewProps {
 export function ScannerView({
   tracks,
   playlists,
+  playStats,
   initialFilter = 'all',
   initialGenre = 'all',
   initialGroupByGenre = false,
+  initialSearchQuery = '',
+  initialOpenCleanup = false,
   watchedFolder,
   autoWatchIntervalSec,
   isScanning,
@@ -103,20 +119,24 @@ export function ScannerView({
   onChangeAutoWatch,
   onComputeMissingHashes,
   onRequestRemoveDuplicates,
+  onRemoveMissingTracks,
   onPlayTrack,
   onPlayList,
   onInspectTrack,
+  onOpenBatchTagEditor,
   onCreatePlaylistFromTracks,
   onAddTracksToPlaylist,
   onRequestDeleteTracks,
   onGoToImport,
 }: ScannerViewProps) {
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(initialSearchQuery);
   const [filter, setFilter] = useState<TrackFilter>(initialFilter);
   const [genreFilter, setGenreFilter] = useState<string>(initialGenre);
+  const [sortBy, setSortBy] = useState<TrackSort>('default');
   const [groupByGenre, setGroupByGenre] = useState<boolean>(initialGroupByGenre);
   const [collapsedGenres, setCollapsedGenres] = useState<Set<string>>(new Set());
   const [showTrackStats, setShowTrackStats] = useState<boolean>(false);
+  const [showLibraryCleanup, setShowLibraryCleanup] = useState<boolean>(initialOpenCleanup);
 
   useEffect(() => {
     setFilter(initialFilter);
@@ -129,6 +149,16 @@ export function ScannerView({
   useEffect(() => {
     setGroupByGenre(initialGroupByGenre);
   }, [initialGroupByGenre]);
+
+  useEffect(() => {
+    setSearch(initialSearchQuery);
+  }, [initialSearchQuery]);
+
+  useEffect(() => {
+    if (initialOpenCleanup) {
+      setShowLibraryCleanup(true);
+    }
+  }, [initialOpenCleanup]);
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isDragging, setIsDragging] = useState(false);
@@ -189,9 +219,25 @@ export function ScannerView({
     return exists ? genreFilter : 'all';
   }, [genreFilter, allStats.genreGroups]);
 
+  const trackGenreNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [id, res] of trackGenreMap.entries()) {
+      map.set(id, res.genre);
+    }
+    return map;
+  }, [trackGenreMap]);
+
+  const smartSearchEval = useMemo(
+    () => evaluateSmartTrackSearch(tracks, search, playStats, trackGenreNameMap),
+    [tracks, search, playStats, trackGenreNameMap]
+  );
+
   const filteredTracks = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return tracks.filter((t) => {
+    const baseTracks = search.trim()
+      ? smartSearchEval.results.map((r) => r.track)
+      : tracks;
+
+    const matched = baseTracks.filter((t) => {
       if (filter === 'matched' && !t.youtubeVideoId) return false;
       if (filter === 'unmatched' && (Boolean(t.youtubeVideoId) || t.matchStatus === 'skipped')) {
         return false;
@@ -201,17 +247,35 @@ export function ScannerView({
       if (effectiveGenreFilter !== 'all' && inferred !== effectiveGenreFilter) {
         return false;
       }
-      if (!q) return true;
-      return (
-        t.title.toLowerCase().includes(q) ||
-        t.artist.toLowerCase().includes(q) ||
-        t.album.toLowerCase().includes(q) ||
-        t.fileName.toLowerCase().includes(q) ||
-        t.folderName.toLowerCase().includes(q) ||
-        inferred.toLowerCase().includes(q)
-      );
+      return true;
     });
-  }, [tracks, search, filter, effectiveGenreFilter, trackGenreMap]);
+
+    if (sortBy === 'default') return matched;
+
+    return [...matched].sort((a, b) => {
+      const aPlays = playStats[a.id]?.playCount ?? a.playCount ?? 0;
+      const bPlays = playStats[b.id]?.playCount ?? b.playCount ?? 0;
+      const aLast = playStats[a.id]?.lastPlayedAt ?? a.lastPlayedAt ?? 0;
+      const bLast = playStats[b.id]?.lastPlayedAt ?? b.lastPlayedAt ?? 0;
+
+      if (sortBy === 'most-played') {
+        return bPlays - aPlays || bLast - aLast || a.title.localeCompare(b.title);
+      }
+      if (sortBy === 'recently-played') {
+        return bLast - aLast || bPlays - aPlays || a.title.localeCompare(b.title);
+      }
+      return a.title.localeCompare(b.title);
+    });
+  }, [
+    tracks,
+    search,
+    smartSearchEval,
+    filter,
+    effectiveGenreFilter,
+    trackGenreMap,
+    sortBy,
+    playStats,
+  ]);
 
   const filteredStats = useMemo(
     () =>
@@ -555,17 +619,28 @@ export function ScannerView({
       {/* Controls & Auto-Watch Toolbar */}
       <div className="px-5 sm:px-6 py-3 border-b border-white/[0.07] flex flex-wrap items-center justify-between gap-3 shrink-0">
         <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-[240px]">
-          {/* Search Input */}
-          <div className="relative w-full sm:w-56">
+          {/* Smart Search Input */}
+          <div className="relative w-full sm:w-64">
             <Search className="h-3.5 w-3.5 text-[#6B7280] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Filter tracks, artists, genres..."
-              aria-label="Filter device tracks"
-              className="w-full pl-8 pr-3 py-1.5 rounded-md bg-[#13151B] border border-white/[0.09] text-xs text-white placeholder-[#6B7280] focus:border-[#FF1F3D] focus:outline-none"
+              placeholder="Smart search (genre:rock, is:missing, plays:>1...)"
+              aria-label="Smart search device tracks"
+              title="Supports fuzzy search plus operators: genre:, artist:, format:, year:, plays:, duration:, is:missing, is:unmatched, lossless, -exclude"
+              className="w-full pl-8 pr-7 py-1.5 rounded-md bg-[#13151B] border border-white/[0.09] text-xs text-white placeholder-[#6B7280] focus:border-[#FF1F3D] focus:outline-none"
             />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch('')}
+                aria-label="Clear search"
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-[#6B7280] hover:text-white transition-colors"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            )}
           </div>
 
           {/* Segmented Match-State Filter Control */}
@@ -612,6 +687,19 @@ export function ScannerView({
                 {g.genre} ({g.count})
               </option>
             ))}
+          </select>
+
+          {/* Sort Order Select (Most Played / Recently Played / Title) */}
+          <select
+            aria-label="Sort library tracks"
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as TrackSort)}
+            className="px-2.5 py-1.5 rounded-md bg-[#13151B] border border-white/[0.09] text-xs text-[#E5E7EB] focus:border-[#FF1F3D] focus:outline-none"
+          >
+            <option value="default">Sort: Recent Scan</option>
+            <option value="most-played">Sort: Most Played</option>
+            <option value="recently-played">Sort: Recently Played</option>
+            <option value="title">Sort: Title A–Z</option>
           </select>
 
           {/* Flat vs Grouped by Genre Toggle */}
@@ -704,6 +792,43 @@ export function ScannerView({
           >
             <BarChart3 className="h-3.5 w-3.5" />
             <span>Stats</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={selectedArray.length === 0 && filteredIds.length === 0}
+            onClick={() =>
+              onOpenBatchTagEditor(
+                selectedArray.length > 0 ? selectedArray : filteredIds,
+                selectedArray.length > 0
+                  ? `${selectedArray.length} selected`
+                  : effectiveGenreFilter !== 'all'
+                    ? effectiveGenreFilter
+                    : 'Filtered catalog'
+              )
+            }
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-[#D1D5DB] bg-[#161920] border border-white/[0.09] hover:text-white hover:bg-[#1E222B] disabled:opacity-40 transition-colors whitespace-nowrap"
+          >
+            <Tags className="h-3.5 w-3.5" />
+            <span>
+              {selectedArray.length > 0 ? `Edit Tags (${selectedArray.length})` : 'Batch Tags'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowLibraryCleanup((prev) => !prev)}
+            aria-expanded={showLibraryCleanup}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium border transition-colors whitespace-nowrap ${
+              showLibraryCleanup
+                ? 'text-white bg-[#1E222D] border-[#EF4444]/60'
+                : stats.missing > 0
+                  ? 'text-[#FCA5A5] bg-[#161920] border-[#EF4444]/40 hover:bg-[#1E222B]'
+                  : 'text-[#D1D5DB] bg-[#161920] border-white/[0.09] hover:text-white hover:bg-[#1E222B]'
+            }`}
+          >
+            <AlertTriangle className="h-3.5 w-3.5" />
+            <span>{stats.missing > 0 ? `Cleanup (${stats.missing})` : 'Cleanup'}</span>
           </button>
 
           <button
@@ -859,6 +984,17 @@ export function ScannerView({
 
             <button
               type="button"
+              onClick={() =>
+                onOpenBatchTagEditor(selectedArray, `${selectedArray.length} selected`)
+              }
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium text-white bg-white/[0.1] hover:bg-white/[0.16] transition-colors whitespace-nowrap"
+            >
+              <Tags className="h-3.5 w-3.5" />
+              <span>Edit Tags</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => {
                 onRequestDeleteTracks(selectedArray);
                 setSelectedIds(new Set());
@@ -873,6 +1009,37 @@ export function ScannerView({
       )}
 
 
+
+      {/* Active Smart Search Operator Bar */}
+      {smartSearchEval.parsed.activeDescriptors.length > 0 && (
+        <div className="px-5 sm:px-6 py-2 bg-[#101219] border-b border-white/[0.07] flex flex-wrap items-center justify-between gap-2 text-xs shrink-0">
+          <div className="flex items-center gap-2 text-[#9CA3AF] min-w-0">
+            <Sparkles className="h-3.5 w-3.5 text-[#FF4D64] shrink-0" />
+            <span className="text-[#D1D5DB] font-medium shrink-0">Smart Search:</span>
+            <span className="truncate">{smartSearchEval.parsed.activeDescriptors.join(' · ')}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSearch('')}
+            className="text-[#8B92A2] hover:text-white transition-colors whitespace-nowrap"
+          >
+            Clear query
+          </button>
+        </div>
+      )}
+
+      {/* Library Cleanup Utility Panel (Missing on Device Tracks) */}
+      {showLibraryCleanup && (
+        <LibraryCleanupPanel
+          tracks={tracks}
+          playlists={playlists}
+          isScanning={isScanning}
+          hasLiveFolderHandle={Boolean(watchedFolder?.hasLiveHandle)}
+          onRemoveMissingTracks={onRemoveMissingTracks}
+          onRescanFolder={onRescanFolder}
+          onClose={() => setShowLibraryCleanup(false)}
+        />
+      )}
 
       {/* Live Track Statistics Panel */}
       {showTrackStats && (
@@ -943,6 +1110,20 @@ export function ScannerView({
                 <th className="py-2.5 px-3">Track</th>
                 <th className="py-2.5 px-3">Album &amp; Genre</th>
                 <th className="py-2.5 px-3 w-48">YouTube Music</th>
+                <th className="py-2.5 px-3 w-20 text-right">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSortBy((prev) => (prev === 'most-played' ? 'default' : 'most-played'))
+                    }
+                    className={`inline-flex items-center gap-1 transition-colors ${
+                      sortBy === 'most-played' ? 'text-[#FF4D64]' : 'hover:text-white'
+                    }`}
+                    title="Sort by most played"
+                  >
+                    <span>Plays</span>
+                  </button>
+                </th>
                 <th className="py-2.5 pl-3 pr-5 w-28 text-right">Format / Time</th>
               </tr>
             </thead>
@@ -953,6 +1134,12 @@ export function ScannerView({
                   const isActivePlay = activePlayingTrackId === track.id;
                   const playable = hasPlayableFile(track.fileKey);
                   const inferredGenre = trackGenreMap.get(track.id)?.genre ?? 'Unclassified';
+                  const pStats = playStats[track.id];
+                  const playCount = pStats?.playCount ?? track.playCount ?? 0;
+                  const skipCount = pStats?.skipCount ?? track.skipCount ?? 0;
+                  const completedCount =
+                    pStats?.completedCount ?? Math.max(0, playCount - skipCount);
+                  const lastPlayedAt = pStats?.lastPlayedAt ?? track.lastPlayedAt ?? null;
 
                   return (
                     <tr
@@ -1119,6 +1306,28 @@ export function ScannerView({
                         </div>
                       </td>
 
+                      <td
+                        className="py-2.5 px-3 text-right font-mono text-xs tabular-nums whitespace-nowrap"
+                        title={
+                          playCount > 0
+                            ? `${completedCount} finished · ${skipCount} skipped${lastPlayedAt ? ` · Last played ${formatRelativeTime(lastPlayedAt)}` : ''}`
+                            : 'Not played yet'
+                        }
+                      >
+                        {playCount > 0 ? (
+                          <div>
+                            <span className="text-white font-medium">{playCount}</span>
+                            {lastPlayedAt && (
+                              <div className="text-[10px] text-[#6B7280]">
+                                {formatRelativeTime(lastPlayedAt)}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-[#4B5563]">—</span>
+                        )}
+                      </td>
+
                       <td className="py-2.5 pl-3 pr-5 text-right font-mono text-xs tabular-nums text-[#8B92A2] whitespace-nowrap">
                         <div>
                           <span className="text-[#6B7280]">{track.format}</span>
@@ -1152,7 +1361,7 @@ export function ScannerView({
                   return (
                     <Fragment key={group.genre}>
                       <tr className="bg-[#11141B] border-y border-white/[0.08]">
-                        <td colSpan={6} className="px-5 py-2.5">
+                        <td colSpan={7} className="px-5 py-2.5">
                           <div className="flex flex-wrap items-center justify-between gap-3">
                             <button
                               type="button"

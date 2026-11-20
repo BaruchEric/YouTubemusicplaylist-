@@ -1,4 +1,4 @@
-import { FileAudio, FolderPlus, Menu, RefreshCw } from 'lucide-react';
+import { FileAudio, FolderPlus, Menu, RefreshCw, Search } from 'lucide-react';
 
 interface TopBarProps {
   sectionLabel: string;
@@ -6,6 +6,7 @@ interface TopBarProps {
   isScanning: boolean;
   pendingSyncCount: number;
   onOpenMobileMenu: () => void;
+  onOpenSmartSearch: () => void;
   onPickFolder: () => void;
   onPickFiles: () => void;
   onOpenSyncQueue: () => void;
@@ -17,6 +18,7 @@ export function TopBar({
   isScanning,
   pendingSyncCount,
   onOpenMobileMenu,
+  onOpenSmartSearch,
   onPickFolder,
   onPickFiles,
   onOpenSyncQueue,
@@ -59,6 +61,17 @@ export function TopBar({
 
       {/* Right: Clean Single-Line Action Controls */}
       <div className="flex items-center gap-2 shrink-0">
+        <button
+          type="button"
+          onClick={onOpenSmartSearch}
+          title="Open Smart Search (⌘K / Ctrl+K)"
+          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-xs text-[#9CA3AF] bg-[#13151B] border border-white/[0.08] hover:text-white hover:border-white/[0.18] transition-colors whitespace-nowrap shrink-0"
+        >
+          <Search className="h-3.5 w-3.5 text-[#717786]" />
+          <span className="hidden md:inline">Smart Search</span>
+          <kbd className="hidden sm:inline font-mono text-[10px] text-[#6B7280] pl-1">⌘K</kbd>
+        </button>
+
         <button
           type="button"
           onClick={onPickFiles}

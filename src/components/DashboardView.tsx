@@ -10,7 +10,6 @@ import {
   FolderOpen,
   FolderSync,
   History,
-  Layers,
   Link2,
   ListMusic,
   Pause,
@@ -21,12 +20,15 @@ import {
 } from 'lucide-react';
 import type {
   LocalTrack,
+  PlayHistoryEntry,
   Playlist,
   PlaylistDiff,
   SyncEvent,
+  TrackPlayStats,
   WatchedFolderInfo,
 } from '../types/music';
 import { computeTrackStatistics, inferTrackGenre } from '../utils/genreInference';
+import type { ShuffleMode } from '../utils/smartShuffle';
 import {
   buildPlaylistYouTubeMusicUrl,
   buildTrackYouTubeMusicUrl,
@@ -35,6 +37,10 @@ import {
   formatRelativeTime,
   formatTotalRuntime,
 } from '../utils/youtubeLinks';
+import { AlbumArtGallery } from './AlbumArtGallery';
+import { GenreDistributionChart } from './GenreDistributionChart';
+import { ListeningActivitySection } from './ListeningActivitySection';
+import { RecommendedForYou } from './RecommendedForYou';
 
 const STUDIO_BANNER_SRC = '/src/assets/images/studio_audio_banner_1795114389740.jpg';
 
@@ -49,23 +55,29 @@ interface DashboardViewProps {
   isScanning: boolean;
   activePlayingTrackId: string | null;
   isAudioPlaying: boolean;
+  playStats: Record<string, TrackPlayStats>;
+  playHistory: PlayHistoryEntry[];
+  onClearPlayHistory: () => void;
   onMountFolder: () => void;
   onPickFilesFallback: () => void;
   onDropTransfer: (dataTransfer: DataTransfer) => void;
   onRescanFolder: () => void;
   onOpenScanner: (
     filter?: 'all' | 'unmatched' | 'matched' | 'missing',
-    options?: { genre?: string; groupByGenre?: boolean }
+    options?: { genre?: string; groupByGenre?: boolean; openCleanup?: boolean; query?: string }
   ) => void;
   onOpenPlaylist: (playlistId: string) => void;
   onOpenCreatePlaylist: () => void;
   onCreatePlaylistFromTracks: (trackIds: string[]) => void;
+  onAddTracksToPlaylist: (playlistId: string, trackIds: string[]) => void;
   onOpenSyncQueue: () => void;
   onOpenTransfer: () => void;
   onApplySync: (playlistId: string) => void;
   onPlayTrack: (trackId: string, queueIds: string[]) => void;
-  onPlayList: (trackIds: string[], options?: { shuffle?: boolean }) => void;
+  onPlayList: (trackIds: string[], options?: { shuffle?: boolean | ShuffleMode }) => void;
   onInspectTrack: (trackId: string) => void;
+  onUpdateAlbumCoverArt?: (trackIds: string[], coverArtUrl: string | null) => void;
+  onOpenBatchTagEditor?: (trackIds: string[], contextLabel: string) => void;
 }
 
 export function DashboardView({
@@ -79,6 +91,9 @@ export function DashboardView({
   isScanning,
   activePlayingTrackId,
   isAudioPlaying,
+  playStats,
+  playHistory,
+  onClearPlayHistory,
   onMountFolder,
   onPickFilesFallback,
   onDropTransfer,
@@ -87,12 +102,15 @@ export function DashboardView({
   onOpenPlaylist,
   onOpenCreatePlaylist,
   onCreatePlaylistFromTracks,
+  onAddTracksToPlaylist,
   onOpenSyncQueue,
   onOpenTransfer,
   onApplySync,
   onPlayTrack,
   onPlayList,
   onInspectTrack,
+  onUpdateAlbumCoverArt,
+  onOpenBatchTagEditor,
 }: DashboardViewProps) {
   const [bannerFailed, setBannerFailed] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
@@ -453,158 +471,43 @@ export function DashboardView({
           </section>
         )}
 
-        {/* Inferred Genre Grouping & Track Statistics 2-Column Section */}
-        {tracks.length > 0 && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-            {/* Left (7 cols): Library Grouped by Inferred Genre */}
-            <section className="lg:col-span-7 rounded-lg border border-white/[0.08] bg-[#12141A] flex flex-col overflow-hidden">
-              <div className="px-5 py-4 border-b border-white/[0.07] flex items-center justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <Layers className="h-4 w-4 text-[#717786]" />
-                    <h2 className="font-display text-base font-semibold text-white">
-                      Library by Inferred Genre
-                    </h2>
-                  </div>
-                  <p className="text-xs text-[#717786] mt-0.5 font-mono tabular-nums">
-                    {allStats.uniqueGenres} genre group{allStats.uniqueGenres === 1 ? '' : 's'} ·{' '}
-                    {allStats.withEmbeddedGenreCount} from embedded tags,{' '}
-                    {allStats.totalTracks - allStats.withEmbeddedGenreCount} inferred from metadata
-                  </p>
+        {/* Genre Distribution (Recharts Pie Chart) & Track Statistics 2-Column Section */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+          {/* Left (7 cols): Recharts Genre Distribution Pie Chart */}
+          <GenreDistributionChart
+            tracks={tracks}
+            allStats={allStats}
+            activeGenre={activeGenre}
+            onSelectGenre={setSelectedGenre}
+            onOpenScanner={onOpenScanner}
+            onPlayList={onPlayList}
+            onCreatePlaylistFromTracks={onCreatePlaylistFromTracks}
+            onMountFolder={onMountFolder}
+            onPickFilesFallback={onPickFilesFallback}
+          />
+
+          {/* Right (5 cols): Track Statistics */}
+          <section className="lg:col-span-5 rounded-lg border border-white/[0.08] bg-[#12141A] p-5 flex flex-col justify-between gap-5">
+            <div>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <BarChart3 className="h-4 w-4 text-[#717786]" />
+                  <h2 className="font-display text-base font-semibold text-white">
+                    Track Statistics
+                  </h2>
                 </div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    onOpenScanner('all', {
-                      genre: activeGenre,
-                      groupByGenre: true,
-                    })
-                  }
-                  className="inline-flex items-center gap-1 text-xs font-medium text-[#FF4D64] hover:text-[#FF7588] transition-colors whitespace-nowrap shrink-0"
-                >
-                  <span>Group in Storage</span>
-                  <ArrowRight className="h-3.5 w-3.5" />
-                </button>
+                <span className="text-xs font-mono tabular-nums text-[#717786]">
+                  {activeGenre === 'all' ? 'Full library' : activeGenre}
+                </span>
               </div>
 
-              <div className="overflow-x-auto flex-1">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead className="bg-[#0F1116] border-b border-white/[0.07] text-[#717786]">
-                    <tr>
-                      <th className="py-2.5 pl-5 pr-3 font-medium">Genre</th>
-                      <th className="py-2.5 px-3 font-medium w-32">Share</th>
-                      <th className="py-2.5 px-3 font-medium">Runtime / Avg</th>
-                      <th className="py-2.5 pl-3 pr-5 font-medium text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-white/[0.05]">
-                    {allStats.genreGroups.map((group) => {
-                      const isSelected = activeGenre === group.genre;
-                      return (
-                        <tr
-                          key={group.genre}
-                          className={`transition-colors ${
-                            isSelected ? 'bg-[#FF1F3D]/[0.08]' : 'hover:bg-white/[0.03]'
-                          }`}
-                        >
-                          <td className="py-2.5 pl-5 pr-3">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setSelectedGenre((prev) =>
-                                  prev === group.genre ? 'all' : group.genre
-                                )
-                              }
-                              className={`font-medium text-left transition-colors ${
-                                isSelected
-                                  ? 'text-[#FF4D64]'
-                                  : 'text-white hover:text-[#FF4D64]'
-                              }`}
-                            >
-                              {group.genre}
-                            </button>
-                            <div className="text-[11px] font-mono tabular-nums text-[#6B7280] mt-0.5">
-                              {group.matchedCount}/{group.count} matched
-                              {group.avgBitrateKbps ? ` · ${group.avgBitrateKbps} kbps` : ''}
-                            </div>
-                          </td>
-
-                          <td className="py-2.5 px-3">
-                            <div className="flex items-center justify-between font-mono tabular-nums text-[11px] text-[#A1A7B5] mb-1">
-                              <span>{group.count} tracks</span>
-                              <span>{group.sharePct}%</span>
-                            </div>
-                            <div className="h-1 w-full rounded-full bg-white/[0.07] overflow-hidden">
-                              <div
-                                className="h-full bg-[#FF1F3D]/80"
-                                style={{ width: `${Math.max(4, group.sharePct)}%` }}
-                              />
-                            </div>
-                          </td>
-
-                          <td className="py-2.5 px-3 font-mono tabular-nums text-[#A1A7B5] whitespace-nowrap">
-                            <div>{formatTotalRuntime(group.totalDuration)}</div>
-                            <div className="text-[11px] text-[#6B7280]">
-                              {formatDuration(group.avgDuration)} avg
-                            </div>
-                          </td>
-
-                          <td className="py-2.5 pl-3 pr-5 text-right whitespace-nowrap">
-                            <div className="inline-flex items-center gap-3">
-                              <button
-                                type="button"
-                                onClick={() => onPlayList(group.trackIds, { shuffle: false })}
-                                aria-label={`Play ${group.genre} tracks`}
-                                title={`Play ${group.genre}`}
-                                className="text-[#9CA3AF] hover:text-white transition-colors"
-                              >
-                                <Play className="h-3.5 w-3.5 fill-current" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => onCreatePlaylistFromTracks(group.trackIds)}
-                                className="text-[#A1A7B5] hover:text-white transition-colors"
-                              >
-                                Playlist
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  onOpenScanner('all', {
-                                    genre: group.genre,
-                                    groupByGenre: false,
-                                  })
-                                }
-                                className="text-[#FF4D64] hover:text-[#FF7588] transition-colors"
-                              >
-                                Filter
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-
-            {/* Right (5 cols): Track Statistics */}
-            <section className="lg:col-span-5 rounded-lg border border-white/[0.08] bg-[#12141A] p-5 flex flex-col justify-between gap-5">
-              <div>
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <BarChart3 className="h-4 w-4 text-[#717786]" />
-                    <h2 className="font-display text-base font-semibold text-white">
-                      Track Statistics
-                    </h2>
-                  </div>
-                  <span className="text-xs font-mono tabular-nums text-[#717786]">
-                    {activeGenre === 'all' ? 'Full library' : activeGenre}
-                  </span>
+              {tracks.length === 0 ? (
+                <div className="mt-4 pt-4 border-t border-white/[0.07] text-xs text-[#717786] leading-relaxed">
+                  Average track length, estimated bitrate, lossless ratio, release span, and
+                  duration distribution will populate as soon as local audio files are scanned.
                 </div>
-
-                {/* 2x3 Quantitative Metric Grid */}
+              ) : (
+                /* 2x3 Quantitative Metric Grid */
                 <div className="mt-4 grid grid-cols-2 gap-x-5 gap-y-4 pt-4 border-t border-white/[0.07]">
                   <div>
                     <div className="text-[11px] text-[#717786]">Average Duration</div>
@@ -653,88 +556,145 @@ export function DashboardView({
                     </div>
                   </div>
                 </div>
-              </div>
+              )}
+            </div>
 
-              {/* Track Length Distribution */}
-              <div className="pt-4 border-t border-white/[0.07] space-y-2.5">
-                <div className="text-xs font-medium text-[#D1D5DB]">Track Duration Distribution</div>
-                <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                  {scopedStats.durationBuckets.map((bucket) => (
-                    <div key={bucket.label} className="space-y-1">
-                      <div className="flex items-center justify-between text-[11px] font-mono tabular-nums">
-                        <span className="text-[#A1A7B5]">{bucket.label}</span>
-                        <span className="text-[#717786]">
-                          {bucket.count} · {bucket.pct}%
-                        </span>
-                      </div>
-                      <div className="h-1 w-full rounded-full bg-white/[0.06] overflow-hidden">
-                        <div
-                          className="h-full bg-[#E5E7EB]/75"
-                          style={{ width: `${bucket.count > 0 ? Math.max(5, bucket.pct) : 0}%` }}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Extremes & Tag Completeness */}
-              <div className="pt-4 border-t border-white/[0.07] space-y-2 text-xs">
-                {scopedStats.longestTrack && (
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[#717786] shrink-0">Longest</span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onPlayTrack(
-                          scopedStats.longestTrack!.id,
-                          scopedTracks.map((t) => t.id)
-                        )
-                      }
-                      className="min-w-0 flex items-center gap-2 text-right hover:text-[#FF4D64] transition-colors"
-                    >
-                      <span className="text-[#E5E7EB] truncate">
-                        {scopedStats.longestTrack.title}
-                      </span>
-                      <span className="font-mono tabular-nums text-[#8B92A2] shrink-0">
-                        {formatDuration(scopedStats.longestTrack.duration)}
-                      </span>
-                    </button>
+            {tracks.length > 0 && (
+              <>
+                {/* Track Length Distribution */}
+                <div className="pt-4 border-t border-white/[0.07] space-y-2.5">
+                  <div className="text-xs font-medium text-[#D1D5DB]">
+                    Track Duration Distribution
                   </div>
-                )}
-                {scopedStats.shortestTrack &&
-                  scopedStats.shortestTrack.id !== scopedStats.longestTrack?.id && (
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                    {scopedStats.durationBuckets.map((bucket) => (
+                      <div key={bucket.label} className="space-y-1">
+                        <div className="flex items-center justify-between text-[11px] font-mono tabular-nums">
+                          <span className="text-[#A1A7B5]">{bucket.label}</span>
+                          <span className="text-[#717786]">
+                            {bucket.count} · {bucket.pct}%
+                          </span>
+                        </div>
+                        <div className="h-1 w-full rounded-full bg-white/[0.06] overflow-hidden">
+                          <div
+                            className="h-full bg-[#E5E7EB]/75"
+                            style={{ width: `${bucket.count > 0 ? Math.max(5, bucket.pct) : 0}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Extremes & Tag Completeness */}
+                <div className="pt-4 border-t border-white/[0.07] space-y-2 text-xs">
+                  {scopedStats.longestTrack && (
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-[#717786] shrink-0">Shortest</span>
+                      <span className="text-[#717786] shrink-0">Longest</span>
                       <button
                         type="button"
                         onClick={() =>
                           onPlayTrack(
-                            scopedStats.shortestTrack!.id,
+                            scopedStats.longestTrack!.id,
                             scopedTracks.map((t) => t.id)
                           )
                         }
                         className="min-w-0 flex items-center gap-2 text-right hover:text-[#FF4D64] transition-colors"
                       >
                         <span className="text-[#E5E7EB] truncate">
-                          {scopedStats.shortestTrack.title}
+                          {scopedStats.longestTrack.title}
                         </span>
                         <span className="font-mono tabular-nums text-[#8B92A2] shrink-0">
-                          {formatDuration(scopedStats.shortestTrack.duration)}
+                          {formatDuration(scopedStats.longestTrack.duration)}
                         </span>
                       </button>
                     </div>
                   )}
-                <div className="pt-1 flex items-center justify-between text-[11px] font-mono tabular-nums text-[#717786]">
-                  <span>Artwork: {scopedStats.withCoverArtCount}/{scopedStats.totalTracks}</span>
-                  <span>
-                    Year tags: {scopedStats.withYearCount}/{scopedStats.totalTracks}
-                  </span>
+                  {scopedStats.shortestTrack &&
+                    scopedStats.shortestTrack.id !== scopedStats.longestTrack?.id && (
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[#717786] shrink-0">Shortest</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onPlayTrack(
+                              scopedStats.shortestTrack!.id,
+                              scopedTracks.map((t) => t.id)
+                            )
+                          }
+                          className="min-w-0 flex items-center gap-2 text-right hover:text-[#FF4D64] transition-colors"
+                        >
+                          <span className="text-[#E5E7EB] truncate">
+                            {scopedStats.shortestTrack.title}
+                          </span>
+                          <span className="font-mono tabular-nums text-[#8B92A2] shrink-0">
+                            {formatDuration(scopedStats.shortestTrack.duration)}
+                          </span>
+                        </button>
+                      </div>
+                    )}
+                  <div className="pt-1 flex items-center justify-between text-[11px] font-mono tabular-nums text-[#717786]">
+                    <span>
+                      Artwork: {scopedStats.withCoverArtCount}/{scopedStats.totalTracks}
+                    </span>
+                    <span>
+                      Year tags: {scopedStats.withYearCount}/{scopedStats.totalTracks}
+                    </span>
+                  </div>
                 </div>
-              </div>
-            </section>
-          </div>
-        )}
+              </>
+            )}
+          </section>
+        </div>
+
+        {/* Recommended for You (Genre-Matched Playlist Suggestions) */}
+        <RecommendedForYou
+          tracks={tracks}
+          playlists={playlists}
+          trackMap={trackMap}
+          activeGenre={activeGenre}
+          activePlayingTrackId={activePlayingTrackId}
+          isAudioPlaying={isAudioPlaying}
+          onAddTracksToPlaylist={onAddTracksToPlaylist}
+          onCreatePlaylistFromTracks={onCreatePlaylistFromTracks}
+          onPlayTrack={onPlayTrack}
+          onInspectTrack={onInspectTrack}
+          onOpenPlaylist={onOpenPlaylist}
+          onMountFolder={onMountFolder}
+          onPickFilesFallback={onPickFilesFallback}
+        />
+
+        {/* Most Played Songs & Recent Play History */}
+        <ListeningActivitySection
+          tracks={scopedTracks}
+          trackMap={trackMap}
+          activeGenre={activeGenre}
+          playStats={playStats}
+          playHistory={playHistory}
+          activePlayingTrackId={activePlayingTrackId}
+          isAudioPlaying={isAudioPlaying}
+          onPlayTrack={onPlayTrack}
+          onPlayList={onPlayList}
+          onCreatePlaylistFromTracks={onCreatePlaylistFromTracks}
+          onInspectTrack={onInspectTrack}
+          onClearPlayHistory={onClearPlayHistory}
+        />
+
+        {/* Album Art Gallery */}
+        <AlbumArtGallery
+          tracks={scopedTracks}
+          activeGenre={activeGenre}
+          activePlayingTrackId={activePlayingTrackId}
+          isAudioPlaying={isAudioPlaying}
+          onPlayTrack={onPlayTrack}
+          onPlayList={onPlayList}
+          onCreatePlaylistFromTracks={onCreatePlaylistFromTracks}
+          onInspectTrack={onInspectTrack}
+          onUpdateAlbumCoverArt={onUpdateAlbumCoverArt}
+          onOpenBatchTagEditor={onOpenBatchTagEditor}
+          onMountFolder={onMountFolder}
+          onPickFilesFallback={onPickFilesFallback}
+        />
 
         {/* Recently Added Local Files (visible immediately once any files are uploaded/scanned) */}
         {recentTracks.length > 0 && (
@@ -1054,11 +1014,21 @@ export function DashboardView({
                 </button>
                 <button
                   type="button"
-                  onClick={() => onOpenScanner('missing', { genre: activeGenre })}
+                  onClick={() =>
+                    onOpenScanner('missing', {
+                      genre: activeGenre,
+                      openCleanup: metrics.missing > 0,
+                    })
+                  }
                   className="text-left group"
+                  title={
+                    metrics.missing > 0
+                      ? 'Open Library Cleanup to remove missing files'
+                      : 'View missing files'
+                  }
                 >
                   <div className="text-[11px] text-[#8B92A2] group-hover:text-white transition-colors">
-                    Missing
+                    {metrics.missing > 0 ? 'Missing · Clean up' : 'Missing'}
                   </div>
                   <div className="mt-0.5 font-mono text-sm font-medium tabular-nums text-[#EF4444]">
                     {metrics.missing}

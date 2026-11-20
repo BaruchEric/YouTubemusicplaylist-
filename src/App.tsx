@@ -1,25 +1,36 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
+import { BatchTagEditorModal, type BatchTrackPatch } from './components/BatchTagEditorModal';
 import { DashboardView } from './components/DashboardView';
 import { MiniPlayer } from './components/MiniPlayer';
 import { ConfirmModal, CreatePlaylistModal } from './components/Modals';
 import { PlaylistView } from './components/PlaylistView';
 import { ScannerView } from './components/ScannerView';
 import { Sidebar } from './components/Sidebar';
+import {
+  SmartPlaylistModal,
+  type SmartPlaylistFormPayload,
+} from './components/SmartPlaylistModal';
+import { SmartPlaylistView } from './components/SmartPlaylistView';
+import { SmartSearchModal } from './components/SmartSearchModal';
 import { SyncQueueView } from './components/SyncQueueView';
+import { ToastContainer } from './components/ToastContainer';
 import { TopBar } from './components/TopBar';
 import { TrackMatchDrawer } from './components/TrackMatchDrawer';
 import { TransferView } from './components/TransferView';
 import { useAudioPlayer } from './hooks/useAudioPlayer';
+import { useToasts, type ToastStat } from './hooks/useToasts';
 import type {
   LocalTrack,
   Playlist,
   PlaylistDiff,
+  SmartPlaylist,
   SyncEvent,
   SyncRule,
   WatchedFolderInfo,
   WorkspaceView,
 } from './types/music';
+import { evaluateSmartPlaylist } from './utils/smartPlaylists';
 import { computeAudioHash, extractLocalTrack, isAudioFile } from './utils/audioMetadata';
 import {
   deleteAudioBlobs,
@@ -42,6 +53,7 @@ import type { ImportedTrackSeed } from './utils/youtubeLinks';
 
 type PendingConfirm =
   | { kind: 'delete-playlist'; playlistId: string; name: string }
+  | { kind: 'delete-smart-playlist'; smartPlaylistId: string; name: string }
   | { kind: 'delete-tracks'; trackIds: string[] }
   | { kind: 'remove-duplicates'; trackIds: string[]; remapToKeep: Record<string, string> }
   | { kind: 'apply-sync'; playlistId: string; name: string; addCount: number; removeCount: number };
@@ -50,17 +62,27 @@ export default function App() {
   const [hydrated, setHydrated] = useState(false);
   const [tracks, setTracks] = useState<LocalTrack[]>([]);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  const [smartPlaylists, setSmartPlaylists] = useState<SmartPlaylist[]>([]);
   const [syncHistory, setSyncHistory] = useState<SyncEvent[]>([]);
   const [watchedFolderName, setWatchedFolderName] = useState<string | null>(null);
   const [lastScannedAt, setLastScannedAt] = useState<number | null>(null);
+  const { toasts, pushToast, dismissToast } = useToasts({ maxVisible: 3 });
 
   const [activeView, setActiveView] = useState<WorkspaceView>('dashboard');
   const [activePlaylistId, setActivePlaylistId] = useState<string | null>(null);
+  const [activeSmartPlaylistId, setActiveSmartPlaylistId] = useState<string | null>(null);
+  const [smartPlaylistModal, setSmartPlaylistModal] = useState<{
+    open: boolean;
+    editing: SmartPlaylist | null;
+  }>({ open: false, editing: null });
   const [scannerFilterPreset, setScannerFilterPreset] = useState<
     'all' | 'unmatched' | 'matched' | 'missing'
   >('all');
   const [scannerGenrePreset, setScannerGenrePreset] = useState<string>('all');
   const [scannerGroupByGenrePreset, setScannerGroupByGenrePreset] = useState<boolean>(false);
+  const [scannerSearchPreset, setScannerSearchPreset] = useState<string>('');
+  const [scannerOpenCleanupPreset, setScannerOpenCleanupPreset] = useState<boolean>(false);
+  const [smartSearchOpen, setSmartSearchOpen] = useState<boolean>(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const [autoWatchIntervalSec, setAutoWatchIntervalSec] = useState<0 | 30 | 120 | 300>(120);
@@ -79,6 +101,11 @@ export default function App() {
     open: boolean;
     seedTrackIds: string[];
   }>({ open: false, seedTrackIds: [] });
+  const [batchTagModal, setBatchTagModal] = useState<{
+    open: boolean;
+    trackIds: string[];
+    contextLabel: string;
+  }>({ open: false, trackIds: [], contextLabel: '' });
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
 
   // Live in-memory references (audio Blobs for playback + FileSystemDirectoryHandle for auto-watch)
@@ -98,7 +125,31 @@ export default function App() {
     tracksRef.current = tracks;
   }, [tracks]);
 
-  const audioPlayer = useAudioPlayer(tracks, fileMapRef);
+  const handlePlayRecorded = useCallback(
+    (event: {
+      trackId: string;
+      outcome: 'completed' | 'skipped';
+      listenedSeconds: number;
+      playedAt: number;
+    }) => {
+      setTracks((prev) =>
+        prev.map((track) => {
+          if (track.id !== event.trackId) return track;
+          return {
+            ...track,
+            playCount: (track.playCount ?? 0) + 1,
+            skipCount: (track.skipCount ?? 0) + (event.outcome === 'skipped' ? 1 : 0),
+            lastPlayedAt: event.playedAt,
+          };
+        })
+      );
+    },
+    []
+  );
+
+  const audioPlayer = useAudioPlayer(tracks, fileMapRef, {
+    onPlayRecorded: handlePlayRecorded,
+  });
 
   // Hydrate library state, stored audio keys & directory handle from IndexedDB
   useEffect(() => {
@@ -112,6 +163,13 @@ export default function App() {
       if (!active) return;
       setTracks(savedState.tracks);
       setPlaylists(savedState.playlists);
+      setSmartPlaylists(
+        (savedState.smartPlaylists ?? []).map((sp) => {
+          const { limit: _legacyLimit, ...rest } = sp as SmartPlaylist & { limit?: number | null };
+          void _legacyLimit;
+          return rest;
+        })
+      );
       setSyncHistory(savedState.syncHistory);
       setWatchedFolderName(savedState.watchedFolderName);
       setLastScannedAt(savedState.lastScannedAt);
@@ -127,17 +185,30 @@ export default function App() {
     };
   }, []);
 
+  // Global Cmd+K / Ctrl+K shortcut for Smart Search
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setSmartSearchOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   // Persist state whenever library mutates
   useEffect(() => {
     if (!hydrated) return;
     saveLibraryState({
       tracks,
       playlists,
+      smartPlaylists,
       syncHistory,
       watchedFolderName,
       lastScannedAt,
     });
-  }, [hydrated, tracks, playlists, syncHistory, watchedFolderName, lastScannedAt]);
+  }, [hydrated, tracks, playlists, smartPlaylists, syncHistory, watchedFolderName, lastScannedAt]);
 
   const trackMap = useMemo(() => {
     const map = new Map<string, LocalTrack>();
@@ -193,11 +264,69 @@ export default function App() {
     ) => {
       const audioEntries = entries.filter((e) => isAudioFile(e.file));
       if (audioEntries.length === 0) {
-        if (!options.quiet) {
+        const folderScope = options.folderRootName?.toLowerCase() ?? '';
+        let newlyMissingCount = 0;
+        let totalMissingInFolder = 0;
+
+        if (options.isFullFolderScan && folderScope) {
+          const matchingTracks = tracksRef.current.filter(
+            (track) =>
+              track.folderName.toLowerCase() === folderScope ||
+              track.relativePath.toLowerCase().startsWith(`${folderScope}/`)
+          );
+          if (matchingTracks.length > 0) {
+            for (const t of matchingTracks) {
+              if (!t.isMissingOnDevice) newlyMissingCount++;
+              totalMissingInFolder++;
+            }
+            const missingIds = new Set(matchingTracks.map((t) => t.id));
+            setTracks((prev) =>
+              prev.map((track) =>
+                missingIds.has(track.id) ? { ...track, isMissingOnDevice: true } : track
+              )
+            );
+          }
+          setLastScannedAt(Date.now());
+        }
+
+        if (options.quiet) {
+          const stats: ToastStat[] = [
+            { label: 'new', value: 0, tone: 'neutral' },
+            {
+              label: 'missing',
+              value: newlyMissingCount > 0 ? newlyMissingCount : totalMissingInFolder,
+              tone: newlyMissingCount > 0 || totalMissingInFolder > 0 ? 'missing' : 'neutral',
+            },
+          ];
+          pushToast({
+            dedupeKey: 'background-scan',
+            title: 'Background scan complete',
+            description: options.folderRootName
+              ? `${options.folderRootName} · 0 audio files found`
+              : '0 audio files found',
+            stats,
+            tone: newlyMissingCount > 0 ? 'warning' : 'neutral',
+            durationMs: newlyMissingCount > 0 ? 6000 : 4000,
+            action:
+              newlyMissingCount > 0 || totalMissingInFolder > 0
+                ? {
+                    label: 'Review missing',
+                    onClick: () => {
+                      setScannerFilterPreset('all');
+                      setScannerOpenCleanupPreset(true);
+                      setActivePlaylistId(null);
+                      setActiveView('scanner');
+                    },
+                  }
+                : undefined,
+          });
+        } else {
           setScanNotice(
-            entries.length > 0
-              ? `Scanned ${entries.length} file(s), but none were supported audio formats (.mp3, .flac, .m4a, .wav, .ogg, .aac, .opus).`
-              : 'No audio files were found in the selected location.'
+            newlyMissingCount > 0
+              ? `${newlyMissingCount} track${newlyMissingCount === 1 ? '' : 's'} detected as missing on device (0 audio files found).`
+              : entries.length > 0
+                ? `Scanned ${entries.length} file(s), but none were supported audio formats (.mp3, .flac, .m4a, .wav, .ogg, .aac, .opus).`
+                : 'No audio files were found in the selected location.'
           );
         }
         return;
@@ -292,22 +421,39 @@ export default function App() {
           }
         }
 
-        let missingCount = 0;
         const folderScope = options.folderRootName?.toLowerCase() ?? '';
+        const restoredCount = Array.from(updatedExistingIds.values()).reduce((count, refreshed) => {
+          const prevTrack = existingByKey.get(refreshed.fileKey);
+          return count + (prevTrack?.isMissingOnDevice ? 1 : 0);
+        }, 0);
+
+        let newlyMissingCount = 0;
+        let totalMissingInFolder = 0;
+        const missingIds = new Set<string>();
+
+        if (options.isFullFolderScan && folderScope) {
+          for (const track of tracksRef.current) {
+            if (updatedExistingIds.has(track.id)) continue;
+            const belongsToFolder =
+              track.folderName.toLowerCase() === folderScope ||
+              track.relativePath.toLowerCase().startsWith(`${folderScope}/`);
+            if (belongsToFolder && !seenKeys.has(track.fileKey)) {
+              missingIds.add(track.id);
+              totalMissingInFolder++;
+              if (!track.isMissingOnDevice) {
+                newlyMissingCount++;
+              }
+            }
+          }
+        }
 
         setTracks((prev) => {
           const merged = prev.map((track) => {
             const refreshed = updatedExistingIds.get(track.id);
             if (refreshed) return refreshed;
 
-            if (options.isFullFolderScan && folderScope) {
-              const belongsToFolder =
-                track.folderName.toLowerCase() === folderScope ||
-                track.relativePath.toLowerCase().startsWith(`${folderScope}/`);
-              if (belongsToFolder && !seenKeys.has(track.fileKey)) {
-                missingCount++;
-                return { ...track, isMissingOnDevice: true };
-              }
+            if (missingIds.has(track.id)) {
+              return { ...track, isMissingOnDevice: true };
             }
             return track;
           });
@@ -328,13 +474,92 @@ export default function App() {
         }
         setLastScannedAt(now);
 
-        if (!options.quiet || newlyParsed.length > 0 || missingCount > 0) {
-          const parts: string[] = [];
-          if (newlyParsed.length > 0) {
-            parts.push(`Added ${newlyParsed.length} audio file${newlyParsed.length === 1 ? '' : 's'}`);
+        const addedCount = newlyParsed.length;
+
+        if (options.quiet) {
+          const stats: ToastStat[] = [];
+          const hasDelta = addedCount > 0 || newlyMissingCount > 0 || restoredCount > 0;
+
+          if (hasDelta) {
+            if (addedCount > 0) {
+              stats.push({
+                label: addedCount === 1 ? 'new track' : 'new tracks',
+                value: addedCount,
+                prefix: '+',
+                tone: 'added',
+              });
+            }
+            if (newlyMissingCount > 0) {
+              stats.push({
+                label: newlyMissingCount === 1 ? 'missing' : 'missing',
+                value: newlyMissingCount,
+                tone: 'missing',
+              });
+            }
+            if (restoredCount > 0) {
+              stats.push({
+                label: 'restored',
+                value: restoredCount,
+                prefix: '+',
+                tone: 'reconnected',
+              });
+            }
+          } else {
+            stats.push(
+              { label: 'new', value: 0, tone: 'neutral' },
+              {
+                label: 'missing',
+                value: totalMissingInFolder,
+                tone: totalMissingInFolder > 0 ? 'missing' : 'neutral',
+              }
+            );
           }
-          if (missingCount > 0) {
-            parts.push(`${missingCount} missing on device`);
+
+          const folderLabel = options.folderRootName ? `${options.folderRootName} · ` : '';
+          pushToast({
+            dedupeKey: 'background-scan',
+            title: 'Background scan complete',
+            description: `${folderLabel}${audioEntries.length} file${audioEntries.length === 1 ? '' : 's'} checked`,
+            stats,
+            tone:
+              newlyMissingCount > 0
+                ? 'warning'
+                : addedCount > 0 || restoredCount > 0
+                  ? 'success'
+                  : 'neutral',
+            durationMs: hasDelta ? 6000 : 4000,
+            action:
+              newlyMissingCount > 0
+                ? {
+                    label: 'Review missing',
+                    onClick: () => {
+                      setScannerFilterPreset('all');
+                      setScannerOpenCleanupPreset(true);
+                      setActivePlaylistId(null);
+                      setActiveView('scanner');
+                    },
+                  }
+                : addedCount > 0
+                  ? {
+                      label: 'View library',
+                      onClick: () => {
+                        setScannerFilterPreset('all');
+                        setActivePlaylistId(null);
+                        setActiveView('scanner');
+                      },
+                    }
+                  : undefined,
+          });
+        } else {
+          const parts: string[] = [];
+          if (addedCount > 0) {
+            parts.push(`Added ${addedCount} audio file${addedCount === 1 ? '' : 's'}`);
+          }
+          if (restoredCount > 0) {
+            parts.push(`Restored ${restoredCount} previously missing`);
+          }
+          if (totalMissingInFolder > 0) {
+            parts.push(`${totalMissingInFolder} missing on device`);
           }
           const summary =
             parts.length > 0
@@ -347,7 +572,7 @@ export default function App() {
         setScanProgress(null);
       }
     },
-    []
+    [pushToast]
   );
 
   // Re-scan active mounted FileSystemDirectoryHandle
@@ -582,7 +807,105 @@ export default function App() {
 
     setPlaylists((prev) => [newPlaylist, ...prev]);
     setActivePlaylistId(newPlaylist.id);
+    setActiveSmartPlaylistId(null);
     setActiveView('playlist');
+  };
+
+  // Smart Playlist CRUD
+  const handleSaveSmartPlaylist = (payload: SmartPlaylistFormPayload, editingId?: string) => {
+    const now = Date.now();
+    if (editingId) {
+      setSmartPlaylists((prev) =>
+        prev.map((sp) => (sp.id === editingId ? { ...sp, ...payload, updatedAt: now } : sp))
+      );
+      setActiveSmartPlaylistId(editingId);
+      setActivePlaylistId(null);
+      setActiveView('smart-playlist');
+      pushToast({
+        title: 'Smart playlist updated',
+        description: payload.name,
+        tone: 'success',
+        durationMs: 3500,
+      });
+      return;
+    }
+
+    const created: SmartPlaylist = {
+      id: crypto.randomUUID(),
+      ...payload,
+      createdAt: now,
+      updatedAt: now,
+    };
+    setSmartPlaylists((prev) => [created, ...prev]);
+    setActiveSmartPlaylistId(created.id);
+    setActivePlaylistId(null);
+    setActiveView('smart-playlist');
+    pushToast({
+      title: 'Smart playlist created',
+      description: created.name,
+      tone: 'success',
+      durationMs: 3500,
+    });
+  };
+
+  const handleDuplicateSmartPlaylist = (smartPlaylistId: string) => {
+    const source = smartPlaylists.find((sp) => sp.id === smartPlaylistId);
+    if (!source) return;
+    const now = Date.now();
+    const copy: SmartPlaylist = {
+      ...source,
+      id: crypto.randomUUID(),
+      name: `${source.name} (Copy)`,
+      rules: source.rules.map((r) => ({ ...r, id: crypto.randomUUID() })),
+      createdAt: now,
+      updatedAt: now,
+    };
+    setSmartPlaylists((prev) => [copy, ...prev]);
+    setActiveSmartPlaylistId(copy.id);
+    setActivePlaylistId(null);
+    setActiveView('smart-playlist');
+    pushToast({
+      title: 'Smart playlist duplicated',
+      description: copy.name,
+      tone: 'neutral',
+      durationMs: 3200,
+    });
+  };
+
+  const handleConvertSmartToStaticPlaylist = (
+    smartPlaylist: SmartPlaylist,
+    matchedTracks: LocalTrack[]
+  ) => {
+    const now = Date.now();
+    const snapshot: Playlist = {
+      id: crypto.randomUUID(),
+      name: `${smartPlaylist.name} Snapshot`,
+      description:
+        smartPlaylist.description || `Static snapshot saved from smart playlist "${smartPlaylist.name}".`,
+      createdAt: now,
+      updatedAt: now,
+      lastSyncedAt: null,
+      trackIds: matchedTracks.map((t) => t.id),
+      syncedTrackIds: [],
+      youtubePlaylistUrl: '',
+      watchedFolderName,
+      syncRule: {
+        autoAddNewFiles: false,
+        removeMissingFiles: true,
+        autoScanIntervalSec: autoWatchIntervalSec,
+        folderFilter: '',
+      },
+    };
+    setPlaylists((prev) => [snapshot, ...prev]);
+    setActivePlaylistId(snapshot.id);
+    setActiveSmartPlaylistId(null);
+    setActiveView('playlist');
+    pushToast({
+      title: 'Saved as standard playlist',
+      description: `${snapshot.name} · ${matchedTracks.length} track${matchedTracks.length === 1 ? '' : 's'}`,
+      tone: 'success',
+      durationMs: 4000,
+    });
   };
 
   const handleUpdatePlaylist = (playlistId: string, updates: Partial<Playlist>) => {
@@ -615,6 +938,61 @@ export default function App() {
     );
     setScanNotice(
       `Added ${trackIdsToAdd.length} track${trackIdsToAdd.length === 1 ? '' : 's'} to playlist.`
+    );
+  };
+
+  const handleUpdateAlbumCoverArt = (trackIds: string[], coverArtUrl: string | null) => {
+    const idSet = new Set(trackIds);
+    setTracks((prev) =>
+      prev.map((t) => (idSet.has(t.id) ? { ...t, coverArtUrl } : t))
+    );
+    setScanNotice(
+      coverArtUrl
+        ? `Updated cover art for ${trackIds.length} track${trackIds.length === 1 ? '' : 's'}.`
+        : `Removed cover art for ${trackIds.length} track${trackIds.length === 1 ? '' : 's'}.`
+    );
+  };
+
+  /**
+   * Single-click Library Cleanup removal of missing on-device tracks from the database,
+   * pruning orphaned IndexedDB blobs and playlist references cleanly.
+   */
+  const handleRemoveMissingTracks = (trackIds: string[]) => {
+    if (trackIds.length === 0) return;
+    const delSet = new Set(trackIds);
+    const removedKeys = tracks
+      .filter((t) => delSet.has(t.id))
+      .map((t) => t.fileKey);
+
+    for (const key of removedKeys) {
+      fileMapRef.current.delete(key);
+    }
+    void deleteAudioBlobs(removedKeys);
+    setStoredAudioKeys((prev) => {
+      const next = new Set(prev);
+      for (const key of removedKeys) next.delete(key);
+      return next;
+    });
+
+    setTracks((prev) => prev.filter((t) => !delSet.has(t.id)));
+    setPlaylists((prev) =>
+      prev.map((pl) => ({
+        ...pl,
+        trackIds: pl.trackIds.filter((id) => !delSet.has(id)),
+        syncedTrackIds: pl.syncedTrackIds.filter((id) => !delSet.has(id)),
+        updatedAt: Date.now(),
+      }))
+    );
+
+    if (audioPlayer.state.activeTrackId && delSet.has(audioPlayer.state.activeTrackId)) {
+      audioPlayer.stop();
+    }
+    if (inspectedTrackId && delSet.has(inspectedTrackId)) {
+      setInspectedTrackId(null);
+    }
+
+    setScanNotice(
+      `Library Cleanup removed ${trackIds.length} missing track${trackIds.length === 1 ? '' : 's'} from your database.`
     );
   };
 
@@ -737,6 +1115,27 @@ export default function App() {
     }
   };
 
+  const handleApplyBatchTagEdits = (patchesById: Record<string, BatchTrackPatch>) => {
+    const ids = Object.keys(patchesById);
+    if (ids.length === 0) return;
+
+    setTracks((prev) =>
+      prev.map((track) => {
+        const patch = patchesById[track.id];
+        if (!patch) return track;
+        const nextTrack: LocalTrack = { ...track, ...patch };
+        // Keep youtubeVideoId consistent if batch explicitly changed matchStatus to unmatched/skipped
+        if (patch.matchStatus === 'skipped' || patch.matchStatus === 'unmatched') {
+          nextTrack.youtubeVideoId = null;
+        }
+        return nextTrack;
+      })
+    );
+    setScanNotice(
+      `Updated metadata tags on ${ids.length} track${ids.length === 1 ? '' : 's'}.`
+    );
+  };
+
   const handleImportPlaylist = (name: string, seeds: ImportedTrackSeed[]) => {
     const now = Date.now();
     const existingByTitleArtist = new Map<string, LocalTrack>();
@@ -828,6 +1227,18 @@ export default function App() {
         setActivePlaylistId(null);
         setActiveView('dashboard');
       }
+    } else if (pendingConfirm.kind === 'delete-smart-playlist') {
+      setSmartPlaylists((prev) => prev.filter((sp) => sp.id !== pendingConfirm.smartPlaylistId));
+      if (activeSmartPlaylistId === pendingConfirm.smartPlaylistId) {
+        setActiveSmartPlaylistId(null);
+        setActiveView('dashboard');
+      }
+      pushToast({
+        title: 'Smart playlist deleted',
+        description: pendingConfirm.name,
+        tone: 'neutral',
+        durationMs: 3200,
+      });
     } else if (pendingConfirm.kind === 'delete-tracks') {
       const delSet = new Set(pendingConfirm.trackIds);
       const removedKeys = tracks
@@ -913,9 +1324,43 @@ export default function App() {
       .filter((t): t is LocalTrack => Boolean(t));
   }, [activePlaylist, trackMap]);
 
+  const smartPlaylistTracksMap = useMemo(() => {
+    const map = new Map<string, LocalTrack[]>();
+    for (const sp of smartPlaylists) {
+      map.set(sp.id, evaluateSmartPlaylist(sp, tracks, audioPlayer.playStats));
+    }
+    return map;
+  }, [smartPlaylists, tracks, audioPlayer.playStats]);
+
+  const smartPlaylistCountMap = useMemo(() => {
+    const map = new Map<string, number>();
+    smartPlaylistTracksMap.forEach((list, id) => {
+      map.set(id, list.length);
+    });
+    return map;
+  }, [smartPlaylistTracksMap]);
+
+  const activeSmartPlaylist = useMemo(
+    () => smartPlaylists.find((sp) => sp.id === activeSmartPlaylistId) ?? null,
+    [smartPlaylists, activeSmartPlaylistId]
+  );
+
+  const activeSmartPlaylistTracks = useMemo(() => {
+    if (!activeSmartPlaylist) return [];
+    return smartPlaylistTracksMap.get(activeSmartPlaylist.id) ?? [];
+  }, [activeSmartPlaylist, smartPlaylistTracksMap]);
+
   const inspectedTrack = useMemo(
     () => (inspectedTrackId ? trackMap.get(inspectedTrackId) ?? null : null),
     [inspectedTrackId, trackMap]
+  );
+
+  const batchTagTracks = useMemo(
+    () =>
+      batchTagModal.trackIds
+        .map((id) => trackMap.get(id))
+        .filter((t): t is LocalTrack => Boolean(t)),
+    [batchTagModal.trackIds, trackMap]
   );
 
   const hasNextUnmatched = useMemo(
@@ -931,10 +1376,13 @@ export default function App() {
     if (activeView === 'playlist' && activePlaylist) {
       return { section: 'Playlists', sub: activePlaylist.name };
     }
+    if (activeView === 'smart-playlist' && activeSmartPlaylist) {
+      return { section: 'Smart Playlists', sub: activeSmartPlaylist.name };
+    }
     if (activeView === 'sync') return { section: 'Sync Queue' };
     if (activeView === 'transfer') return { section: 'Import & Export' };
     return { section: 'Device Storage' };
-  }, [activeView, activePlaylist]);
+  }, [activeView, activePlaylist, activeSmartPlaylist]);
 
   return (
     <div className="h-screen w-screen overflow-hidden flex bg-[#0B0C0E] text-[#F4F5F7]">
@@ -962,7 +1410,10 @@ export default function App() {
       <Sidebar
         activeView={activeView}
         activePlaylistId={activePlaylistId}
+        activeSmartPlaylistId={activeSmartPlaylistId}
         playlists={playlists}
+        smartPlaylists={smartPlaylists}
+        smartPlaylistCountMap={smartPlaylistCountMap}
         diffMap={diffMap}
         totalLocalTracks={tracks.length}
         totalPendingSyncs={totalPendingSyncs}
@@ -976,14 +1427,25 @@ export default function App() {
             setScannerFilterPreset('all');
             setScannerGenrePreset('all');
             setScannerGroupByGenrePreset(false);
+            setScannerSearchPreset('');
+            setScannerOpenCleanupPreset(false);
           }
           if (view !== 'playlist') setActivePlaylistId(null);
+          if (view !== 'smart-playlist') setActiveSmartPlaylistId(null);
         }}
         onSelectPlaylist={(id) => {
           setActivePlaylistId(id);
+          setActiveSmartPlaylistId(null);
           setActiveView('playlist');
         }}
+        onSelectSmartPlaylist={(id) => {
+          setActiveSmartPlaylistId(id);
+          setActivePlaylistId(null);
+          setActiveView('smart-playlist');
+        }}
         onOpenCreatePlaylist={() => setCreateModalState({ open: true, seedTrackIds: [] })}
+        onOpenCreateSmartPlaylist={() => setSmartPlaylistModal({ open: true, editing: null })}
+        onEditSmartPlaylist={(sp) => setSmartPlaylistModal({ open: true, editing: sp })}
         onRescanWatchedFolder={() => handleRescanWatchedFolder(false)}
       />
 
@@ -995,6 +1457,7 @@ export default function App() {
           isScanning={isScanning}
           pendingSyncCount={totalPendingSyncs}
           onOpenMobileMenu={() => setMobileMenuOpen(true)}
+          onOpenSmartSearch={() => setSmartSearchOpen(true)}
           onPickFolder={handleMountFolder}
           onPickFiles={() => filesInputRef.current?.click()}
           onOpenSyncQueue={() => {
@@ -1069,6 +1532,9 @@ export default function App() {
             isScanning={isScanning}
             activePlayingTrackId={audioPlayer.state.activeTrackId}
             isAudioPlaying={audioPlayer.state.isPlaying}
+            playStats={audioPlayer.playStats}
+            playHistory={audioPlayer.playHistory}
+            onClearPlayHistory={audioPlayer.clearPlayHistory}
             onMountFolder={handleMountFolder}
             onPickFilesFallback={() => filesInputRef.current?.click()}
             onDropTransfer={handleDropTransfer}
@@ -1077,6 +1543,8 @@ export default function App() {
               setScannerFilterPreset(preset);
               setScannerGenrePreset(options?.genre ?? 'all');
               setScannerGroupByGenrePreset(Boolean(options?.groupByGenre));
+              setScannerSearchPreset(options?.query ?? '');
+              setScannerOpenCleanupPreset(Boolean(options?.openCleanup));
               setActivePlaylistId(null);
               setActiveView('scanner');
             }}
@@ -1088,6 +1556,7 @@ export default function App() {
             onCreatePlaylistFromTracks={(seedTrackIds) =>
               setCreateModalState({ open: true, seedTrackIds })
             }
+            onAddTracksToPlaylist={handleAddTracksToPlaylist}
             onOpenSyncQueue={() => {
               setActivePlaylistId(null);
               setActiveView('sync');
@@ -1100,6 +1569,10 @@ export default function App() {
             onPlayTrack={audioPlayer.playTrack}
             onPlayList={audioPlayer.playList}
             onInspectTrack={setInspectedTrackId}
+            onUpdateAlbumCoverArt={handleUpdateAlbumCoverArt}
+            onOpenBatchTagEditor={(trackIds, contextLabel) =>
+              setBatchTagModal({ open: true, trackIds, contextLabel })
+            }
           />
         )}
 
@@ -1107,9 +1580,12 @@ export default function App() {
           <ScannerView
             tracks={tracks}
             playlists={playlists}
+            playStats={audioPlayer.playStats}
             initialFilter={scannerFilterPreset}
             initialGenre={scannerGenrePreset}
             initialGroupByGenre={scannerGroupByGenrePreset}
+            initialSearchQuery={scannerSearchPreset}
+            initialOpenCleanup={scannerOpenCleanupPreset}
             watchedFolder={watchedFolder}
             autoWatchIntervalSec={autoWatchIntervalSec}
             isScanning={isScanning}
@@ -1131,9 +1607,13 @@ export default function App() {
             onRequestRemoveDuplicates={(trackIds, remapToKeep) =>
               setPendingConfirm({ kind: 'remove-duplicates', trackIds, remapToKeep })
             }
+            onRemoveMissingTracks={handleRemoveMissingTracks}
             onPlayTrack={audioPlayer.playTrack}
             onPlayList={audioPlayer.playList}
             onInspectTrack={setInspectedTrackId}
+            onOpenBatchTagEditor={(trackIds, contextLabel) =>
+              setBatchTagModal({ open: true, trackIds, contextLabel })
+            }
             onCreatePlaylistFromTracks={(seedTrackIds) =>
               setCreateModalState({ open: true, seedTrackIds })
             }
@@ -1150,9 +1630,11 @@ export default function App() {
             playlist={activePlaylist}
             tracks={activePlaylistTracks}
             diff={diffMap.get(activePlaylist.id)!}
+            playStats={audioPlayer.playStats}
             availableFolders={availableFolders}
             activePlayingTrackId={audioPlayer.state.activeTrackId}
             isAudioPlaying={audioPlayer.state.isPlaying}
+            shuffleMode={audioPlayer.state.shuffleMode}
             hasPlayableFile={(fileKey) =>
               fileMapRef.current.has(fileKey) || storedAudioKeys.has(fileKey)
             }
@@ -1169,12 +1651,45 @@ export default function App() {
             }
             onApplySync={handleRequestApplySync}
             onInspectTrack={setInspectedTrackId}
+            onOpenBatchTagEditor={(trackIds, contextLabel) =>
+              setBatchTagModal({ open: true, trackIds, contextLabel })
+            }
             onPlayTrack={audioPlayer.playTrack}
             onPlayList={audioPlayer.playList}
             onGoToScanner={() => {
               setActiveView('scanner');
               setActivePlaylistId(null);
             }}
+          />
+        )}
+
+        {activeView === 'smart-playlist' && activeSmartPlaylist && (
+          <SmartPlaylistView
+            smartPlaylist={activeSmartPlaylist}
+            tracks={activeSmartPlaylistTracks}
+            playStats={audioPlayer.playStats}
+            activePlayingTrackId={audioPlayer.state.activeTrackId}
+            isAudioPlaying={audioPlayer.state.isPlaying}
+            shuffleMode={audioPlayer.state.shuffleMode}
+            hasPlayableFile={(fileKey) =>
+              fileMapRef.current.has(fileKey) || storedAudioKeys.has(fileKey)
+            }
+            onEditRules={(sp) => setSmartPlaylistModal({ open: true, editing: sp })}
+            onDuplicate={handleDuplicateSmartPlaylist}
+            onConvertToStaticPlaylist={handleConvertSmartToStaticPlaylist}
+            onRequestDelete={(sp) =>
+              setPendingConfirm({
+                kind: 'delete-smart-playlist',
+                smartPlaylistId: sp.id,
+                name: sp.name,
+              })
+            }
+            onPlayTrack={audioPlayer.playTrack}
+            onPlayList={audioPlayer.playList}
+            onInspectTrack={setInspectedTrackId}
+            onOpenBatchTagEditor={(trackIds, contextLabel) =>
+              setBatchTagModal({ open: true, trackIds, contextLabel })
+            }
           />
         )}
 
@@ -1216,6 +1731,9 @@ export default function App() {
               .filter((t): t is LocalTrack => Boolean(t))}
             totalLibraryCount={tracks.length}
             state={audioPlayer.state}
+            activeTrackReplayGain={audioPlayer.activeTrackReplayGain}
+            analyzedTrackCount={audioPlayer.analyzedTrackCount}
+            loudnessScanProgress={audioPlayer.loudnessScanProgress}
             onTogglePlay={audioPlayer.togglePlay}
             onSelectTrack={(trackId) =>
               audioPlayer.playTrack(
@@ -1231,6 +1749,13 @@ export default function App() {
             onToggleShuffle={audioPlayer.toggleShuffle}
             onCycleRepeat={audioPlayer.cycleRepeatMode}
             onCycleCrossfade={audioPlayer.cycleCrossfade}
+            onSetReplayGainMode={audioPlayer.setReplayGainMode}
+            onSetReplayGainTargetLufs={audioPlayer.setReplayGainTargetLufs}
+            onSetReplayGainPreampDb={audioPlayer.setReplayGainPreampDb}
+            onSetReplayGainPreventClipping={audioPlayer.setReplayGainPreventClipping}
+            onAnalyzeLibraryLoudness={audioPlayer.analyzeLibraryLoudness}
+            onCancelLibraryLoudnessScan={audioPlayer.cancelLibraryLoudnessScan}
+            onClearLoudnessCache={audioPlayer.clearLoudnessCache}
             onPrev={audioPlayer.prevTrack}
             onNext={audioPlayer.nextTrack}
             onRelinkFiles={() => filesInputRef.current?.click()}
@@ -1245,6 +1770,53 @@ export default function App() {
         hasNextUnmatched={hasNextUnmatched}
         onClose={() => setInspectedTrackId(null)}
         onSave={handleSaveTrackInspection}
+      />
+
+      {/* Global Smart Search Command Palette (Cmd+K / Ctrl+K) */}
+      <SmartSearchModal
+        open={smartSearchOpen}
+        tracks={tracks}
+        playlists={playlists}
+        playStats={audioPlayer.playStats}
+        activePlayingTrackId={audioPlayer.state.activeTrackId}
+        isAudioPlaying={audioPlayer.state.isPlaying}
+        onClose={() => setSmartSearchOpen(false)}
+        onPlayTrack={audioPlayer.playTrack}
+        onPlayList={audioPlayer.playList}
+        onInspectTrack={setInspectedTrackId}
+        onOpenPlaylist={(playlistId) => {
+          setActivePlaylistId(playlistId);
+          setActiveView('playlist');
+        }}
+        onOpenScannerWithQuery={(opts) => {
+          setScannerFilterPreset(opts.openCleanup ? 'missing' : 'all');
+          setScannerGenrePreset(opts.genre ?? 'all');
+          setScannerGroupByGenrePreset(Boolean(opts.groupByGenre));
+          setScannerSearchPreset(opts.query ?? '');
+          setScannerOpenCleanupPreset(Boolean(opts.openCleanup));
+          setActivePlaylistId(null);
+          setActiveView('scanner');
+        }}
+      />
+
+      {/* Batch Tag Editor Modal */}
+      <BatchTagEditorModal
+        isOpen={batchTagModal.open}
+        tracks={batchTagTracks}
+        contextLabel={batchTagModal.contextLabel}
+        onClose={() => setBatchTagModal({ open: false, trackIds: [], contextLabel: '' })}
+        onApply={handleApplyBatchTagEdits}
+      />
+
+      {/* Create / Edit Smart Playlist Modal */}
+      <SmartPlaylistModal
+        isOpen={smartPlaylistModal.open}
+        editingPlaylist={smartPlaylistModal.editing}
+        tracks={tracks}
+        playStats={audioPlayer.playStats}
+        availableFolders={availableFolders}
+        onClose={() => setSmartPlaylistModal({ open: false, editing: null })}
+        onSave={handleSaveSmartPlaylist}
       />
 
       {/* Create Playlist Modal */}
@@ -1263,24 +1835,28 @@ export default function App() {
         title={
           pendingConfirm?.kind === 'delete-playlist'
             ? `Delete "${pendingConfirm.name}"?`
-            : pendingConfirm?.kind === 'delete-tracks'
-              ? `Remove ${pendingConfirm.trackIds.length} track${pendingConfirm.trackIds.length === 1 ? '' : 's'}?`
-              : pendingConfirm?.kind === 'remove-duplicates'
-                ? `Remove ${pendingConfirm.trackIds.length} redundant duplicate${pendingConfirm.trackIds.length === 1 ? '' : 's'}?`
-                : pendingConfirm?.kind === 'apply-sync'
-                  ? `Apply sync changes to "${pendingConfirm.name}"?`
-                  : ''
+            : pendingConfirm?.kind === 'delete-smart-playlist'
+              ? `Delete smart playlist "${pendingConfirm.name}"?`
+              : pendingConfirm?.kind === 'delete-tracks'
+                ? `Remove ${pendingConfirm.trackIds.length} track${pendingConfirm.trackIds.length === 1 ? '' : 's'}?`
+                : pendingConfirm?.kind === 'remove-duplicates'
+                  ? `Remove ${pendingConfirm.trackIds.length} redundant duplicate${pendingConfirm.trackIds.length === 1 ? '' : 's'}?`
+                  : pendingConfirm?.kind === 'apply-sync'
+                    ? `Apply sync changes to "${pendingConfirm.name}"?`
+                    : ''
         }
         message={
           pendingConfirm?.kind === 'delete-playlist'
             ? 'This removes the playlist and its sync rules from CrateSync. Your original audio files on device storage are never modified.'
-            : pendingConfirm?.kind === 'delete-tracks'
-              ? 'This removes the selected entries from your CrateSync catalog and playlists. Your original audio files on device storage will not be deleted.'
-              : pendingConfirm?.kind === 'remove-duplicates'
-                ? 'This removes the redundant duplicate copies from your CrateSync library and automatically remaps any affected playlists to keep the primary copy. Original files on your device are not deleted.'
-                : pendingConfirm?.kind === 'apply-sync'
-                  ? `This will add ${pendingConfirm.addCount} track(s) and remove ${pendingConfirm.removeCount} track(s) from the synced playlist snapshot.`
-                  : ''
+            : pendingConfirm?.kind === 'delete-smart-playlist'
+              ? 'This removes the smart playlist and its saved filter rules from CrateSync. Your tracks and original audio files remain untouched.'
+              : pendingConfirm?.kind === 'delete-tracks'
+                ? 'This removes the selected entries from your CrateSync catalog and playlists. Your original audio files on device storage will not be deleted.'
+                : pendingConfirm?.kind === 'remove-duplicates'
+                  ? 'This removes the redundant duplicate copies from your CrateSync library and automatically remaps any affected playlists to keep the primary copy. Original files on your device are not deleted.'
+                  : pendingConfirm?.kind === 'apply-sync'
+                    ? `This will add ${pendingConfirm.addCount} track(s) and remove ${pendingConfirm.removeCount} track(s) from the synced playlist snapshot.`
+                    : ''
         }
         confirmLabel={
           pendingConfirm?.kind === 'apply-sync'
@@ -1292,6 +1868,13 @@ export default function App() {
         destructive={pendingConfirm?.kind !== 'apply-sync'}
         onCancel={() => setPendingConfirm(null)}
         onConfirm={handleConfirmPendingAction}
+      />
+
+      {/* Non-intrusive background scan toast notifications */}
+      <ToastContainer
+        toasts={toasts}
+        onDismiss={dismissToast}
+        hasMiniPlayer={tracks.length > 0 || Boolean(audioPlayer.activeTrack)}
       />
     </div>
   );

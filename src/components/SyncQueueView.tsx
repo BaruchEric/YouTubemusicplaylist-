@@ -135,8 +135,8 @@ export function SyncQueueView({
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2.5">
-                        {batches.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-2.5">
+                        {batches.length === 1 && (
                           <a
                             href={batches[0].url}
                             target="_blank"
@@ -147,6 +147,19 @@ export function SyncQueueView({
                             <span>Open Queue ({batches[0].count})</span>
                           </a>
                         )}
+                        {batches.length > 1 &&
+                          batches.map((batch) => (
+                            <a
+                              key={batch.label}
+                              href={batch.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium text-[#E5E7EB] bg-[#1C2029] hover:bg-[#252A36] transition-colors whitespace-nowrap"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                              <span>{batch.label}</span>
+                            </a>
+                          ))}
                         <button
                           type="button"
                           onClick={() => onRequestApplySync(playlist.id)}

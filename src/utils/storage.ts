@@ -1,4 +1,4 @@
-import type { LocalTrack, Playlist, SyncEvent } from '../types/music';
+import type { LocalTrack, Playlist, SmartPlaylist, SyncEvent } from '../types/music';
 
 const DB_NAME = 'CrateSyncDB';
 const DB_VERSION = 2;
@@ -12,6 +12,7 @@ const STORES = {
 export interface PersistedLibraryState {
   tracks: LocalTrack[];
   playlists: Playlist[];
+  smartPlaylists: SmartPlaylist[];
   syncHistory: SyncEvent[];
   watchedFolderName: string | null;
   lastScannedAt: number | null;
@@ -20,6 +21,7 @@ export interface PersistedLibraryState {
 const DEFAULT_STATE: PersistedLibraryState = {
   tracks: [],
   playlists: [],
+  smartPlaylists: [],
   syncHistory: [],
   watchedFolderName: null,
   lastScannedAt: null,

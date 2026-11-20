@@ -13,9 +13,18 @@ import {
   RefreshCw,
   Shuffle,
   SlidersHorizontal,
+  Tags,
   Trash2,
 } from 'lucide-react';
-import type { LocalTrack, Playlist, PlaylistDiff, SyncRule } from '../types/music';
+import type { ShuffleMode } from '../hooks/useAudioPlayer';
+import type {
+  LocalTrack,
+  Playlist,
+  PlaylistDiff,
+  SyncRule,
+  TrackPlayStats,
+} from '../types/music';
+import { getSmartShuffleSummary } from '../utils/smartShuffle';
 import {
   buildInstantQueueBatches,
   buildPlaylistYouTubeMusicUrl,
@@ -36,9 +45,11 @@ interface PlaylistViewProps {
   playlist: Playlist;
   tracks: LocalTrack[];
   diff: PlaylistDiff;
+  playStats: Record<string, TrackPlayStats>;
   availableFolders: string[];
   activePlayingTrackId: string | null;
   isAudioPlaying: boolean;
+  shuffleMode: ShuffleMode;
   hasPlayableFile: (fileKey: string) => boolean;
   onUpdatePlaylist: (playlistId: string, updates: Partial<Playlist>) => void;
   onUpdateSyncRule: (playlistId: string, rule: SyncRule) => void;
@@ -47,8 +58,9 @@ interface PlaylistViewProps {
   onRequestDeletePlaylist: (playlistId: string) => void;
   onApplySync: (playlistId: string) => void;
   onInspectTrack: (trackId: string) => void;
+  onOpenBatchTagEditor: (trackIds: string[], contextLabel: string) => void;
   onPlayTrack: (trackId: string, queueIds: string[]) => void;
-  onPlayList: (trackIds: string[], options?: { shuffle?: boolean }) => void;
+  onPlayList: (trackIds: string[], options?: { shuffle?: boolean | ShuffleMode }) => void;
   onGoToScanner: () => void;
 }
 
@@ -56,9 +68,11 @@ export function PlaylistView({
   playlist,
   tracks,
   diff,
+  playStats,
   availableFolders,
   activePlayingTrackId,
   isAudioPlaying,
+  shuffleMode,
   hasPlayableFile,
   onUpdatePlaylist,
   onUpdateSyncRule,
@@ -67,6 +81,7 @@ export function PlaylistView({
   onRequestDeletePlaylist,
   onApplySync,
   onInspectTrack,
+  onOpenBatchTagEditor,
   onPlayTrack,
   onPlayList,
   onGoToScanner,
@@ -100,6 +115,7 @@ export function PlaylistView({
     [playlist, tracks]
   );
   const trackIds = useMemo(() => tracks.map((t) => t.id), [tracks]);
+  const smartSummary = useMemo(() => getSmartShuffleSummary(tracks), [tracks]);
   const syncedSet = useMemo(() => new Set(playlist.syncedTrackIds), [playlist.syncedTrackIds]);
   const linkedPlaylistId = extractYouTubePlaylistId(playlist.youtubePlaylistUrl);
 
@@ -260,7 +276,7 @@ export function PlaylistView({
               <>
                 <button
                   type="button"
-                  onClick={() => onPlayList(trackIds, { shuffle: false })}
+                  onClick={() => onPlayList(trackIds, { shuffle: 'off' })}
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md text-xs font-medium text-[#0B0C0E] bg-white hover:bg-[#E5E7EB] transition-colors whitespace-nowrap"
                 >
                   <Play className="h-3.5 w-3.5 fill-current" />
@@ -268,8 +284,26 @@ export function PlaylistView({
                 </button>
                 <button
                   type="button"
-                  onClick={() => onPlayList(trackIds, { shuffle: true })}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium text-[#E5E7EB] bg-[#161920] border border-white/[0.09] hover:text-white hover:bg-[#1E222B] transition-colors whitespace-nowrap"
+                  onClick={() => onPlayList(trackIds, { shuffle: 'smart' })}
+                  title={`Smart Shuffle prioritizes ${smartSummary.matchedCount} YouTube-matched and ${smartSummary.priorityCount} metadata-complete tracks over unmatched files`}
+                  className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium border transition-colors whitespace-nowrap ${
+                    shuffleMode === 'smart'
+                      ? 'text-white bg-[#FF1F3D]/20 border-[#FF1F3D]/55 hover:bg-[#FF1F3D]/30'
+                      : 'text-[#E5E7EB] bg-[#161920] border-white/[0.11] hover:text-white hover:bg-[#1E222B]'
+                  }`}
+                >
+                  <Shuffle className="h-3.5 w-3.5 text-[#FF4D64]" />
+                  <span>Smart Shuffle</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onPlayList(trackIds, { shuffle: 'standard' })}
+                  title="Standard equal-weight shuffle across all tracks"
+                  className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium border transition-colors whitespace-nowrap ${
+                    shuffleMode === 'standard'
+                      ? 'text-white bg-white/[0.12] border-white/[0.2]'
+                      : 'text-[#D1D5DB] bg-[#161920] border-white/[0.09] hover:text-white hover:bg-[#1E222B]'
+                  }`}
                 >
                   <Shuffle className="h-3.5 w-3.5" />
                   <span>Shuffle</span>
@@ -353,6 +387,16 @@ export function PlaylistView({
               <Download className="h-3.5 w-3.5" />
               <span>Export M3U8</span>
             </button>
+            {trackIds.length > 0 && (
+              <button
+                type="button"
+                onClick={() => onOpenBatchTagEditor(trackIds, playlist.name)}
+                className="inline-flex items-center gap-1.5 text-[#A1A7B5] hover:text-white transition-colors whitespace-nowrap"
+              >
+                <Tags className="h-3.5 w-3.5" />
+                <span>Batch Edit Tags</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={handleCopyTracklist}
@@ -509,6 +553,7 @@ export function PlaylistView({
                 <th className="py-2.5 px-3">Track</th>
                 <th className="py-2.5 px-3 w-44">Sync State</th>
                 <th className="py-2.5 px-3 w-48">YouTube Music</th>
+                <th className="py-2.5 px-3 w-16 text-right">Plays</th>
                 <th className="py-2.5 px-3 w-20 text-right">Time</th>
                 <th className="py-2.5 pl-2 pr-6 w-28 text-right">Order</th>
               </tr>
@@ -518,6 +563,12 @@ export function PlaylistView({
                 const isActivePlay = activePlayingTrackId === track.id;
                 const playable = hasPlayableFile(track.fileKey);
                 const isSynced = syncedSet.has(track.id);
+                const pStats = playStats[track.id];
+                const playCount = pStats?.playCount ?? track.playCount ?? 0;
+                const skipCount = pStats?.skipCount ?? track.skipCount ?? 0;
+                const completedCount =
+                  pStats?.completedCount ?? Math.max(0, playCount - skipCount);
+                const lastPlayedAt = pStats?.lastPlayedAt ?? track.lastPlayedAt ?? null;
 
                 return (
                   <tr key={track.id} className="group hover:bg-white/[0.03] transition-colors">
@@ -641,6 +692,21 @@ export function PlaylistView({
                           <ExternalLink className="h-3 w-3" />
                         </a>
                       </div>
+                    </td>
+
+                    <td
+                      className="py-2.5 px-3 text-right font-mono text-xs tabular-nums"
+                      title={
+                        playCount > 0
+                          ? `${completedCount} finished · ${skipCount} skipped${lastPlayedAt ? ` · Last played ${formatRelativeTime(lastPlayedAt)}` : ''}`
+                          : 'Not played yet'
+                      }
+                    >
+                      {playCount > 0 ? (
+                        <span className="text-white font-medium">{playCount}</span>
+                      ) : (
+                        <span className="text-[#4B5563]">—</span>
+                      )}
                     </td>
 
                     <td className="py-2.5 px-3 text-right font-mono text-xs tabular-nums text-[#8B92A2]">

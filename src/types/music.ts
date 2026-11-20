@@ -24,6 +24,31 @@ export interface LocalTrack {
   youtubeVideoId: string | null;
   youtubeTitle: string | null;
   matchStatus: MatchStatus;
+  playCount?: number;
+  skipCount?: number;
+  lastPlayedAt?: number | null;
+}
+
+export type PlayEventOutcome = 'completed' | 'skipped';
+
+export interface TrackPlayStats {
+  playCount: number;
+  completedCount: number;
+  skipCount: number;
+  lastPlayedAt: number | null;
+}
+
+export interface PlayHistoryEntry {
+  id: string;
+  trackId: string;
+  title: string;
+  artist: string;
+  album: string;
+  coverArtUrl: string | null;
+  playedAt: number;
+  outcome: PlayEventOutcome;
+  listenedSeconds: number;
+  duration: number;
 }
 
 export interface SyncRule {
@@ -77,7 +102,69 @@ export interface SyncEvent {
   summary: string;
 }
 
-export type WorkspaceView = 'dashboard' | 'scanner' | 'playlist' | 'sync' | 'transfer';
+export type SmartRuleField =
+  | 'genre'
+  | 'artist'
+  | 'album'
+  | 'title'
+  | 'format'
+  | 'year'
+  | 'playCount'
+  | 'duration'
+  | 'matchStatus'
+  | 'folderName'
+  | 'addedDaysAgo';
+
+export type SmartRuleOperator =
+  | 'contains'
+  | 'not_contains'
+  | 'equals'
+  | 'not_equals'
+  | 'gt'
+  | 'gte'
+  | 'lt'
+  | 'lte';
+
+export interface SmartPlaylistRule {
+  id: string;
+  field: SmartRuleField;
+  operator: SmartRuleOperator;
+  value: string;
+}
+
+export type SmartPlaylistMatchMode = 'all' | 'any';
+
+export type SmartPlaylistSortBy =
+  | 'addedAt'
+  | 'playCount'
+  | 'lastPlayedAt'
+  | 'title'
+  | 'artist'
+  | 'duration'
+  | 'year';
+
+export type SmartPlaylistSortDir = 'asc' | 'desc';
+
+export interface SmartPlaylist {
+  id: string;
+  name: string;
+  description: string;
+  matchMode: SmartPlaylistMatchMode;
+  rules: SmartPlaylistRule[];
+  sortBy: SmartPlaylistSortBy;
+  sortDir: SmartPlaylistSortDir;
+  excludeMissing: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type WorkspaceView =
+  | 'dashboard'
+  | 'scanner'
+  | 'playlist'
+  | 'smart-playlist'
+  | 'sync'
+  | 'transfer';
 
 export interface WatchedFolderInfo {
   name: string;
