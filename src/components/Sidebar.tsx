@@ -1,5 +1,5 @@
 import {
-  ArrowLeftRight,
+  Cloud,
   Disc3,
   ExternalLink,
   FolderSync,
@@ -93,8 +93,8 @@ export function Sidebar({
     },
     {
       id: 'transfer',
-      label: 'Import & Export',
-      icon: ArrowLeftRight,
+      label: 'Drive Sync & Transfer',
+      icon: Cloud,
     },
   ];
 

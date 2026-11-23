@@ -1,4 +1,11 @@
-import type { LocalTrack, Playlist, SmartPlaylist, SyncEvent } from '../types/music';
+import type {
+  DriveFolderMapping,
+  LocalTrack,
+  Playlist,
+  SmartPlaylist,
+  SyncDeviceProfile,
+  SyncEvent,
+} from '../types/music';
 
 const DB_NAME = 'CrateSyncDB';
 const DB_VERSION = 2;
@@ -16,6 +23,8 @@ export interface PersistedLibraryState {
   syncHistory: SyncEvent[];
   watchedFolderName: string | null;
   lastScannedAt: number | null;
+  devices?: SyncDeviceProfile[];
+  folderMappings?: DriveFolderMapping[];
 }
 
 const DEFAULT_STATE: PersistedLibraryState = {
@@ -25,6 +34,8 @@ const DEFAULT_STATE: PersistedLibraryState = {
   syncHistory: [],
   watchedFolderName: null,
   lastScannedAt: null,
+  devices: [],
+  folderMappings: [],
 };
 
 const LS_FALLBACK_KEY = 'cratesync_library_v1';
@@ -148,6 +159,58 @@ export async function deleteAudioBlobs(fileKeys: string[]): Promise<void> {
       for (const key of fileKeys) {
         store.delete(key);
       }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+  } catch {
+    // Ignore
+  }
+}
+
+export interface AudioCacheStats {
+  cachedCount: number;
+  totalBytes: number;
+  cachedKeys: Set<string>;
+}
+
+export async function getAudioCacheStats(): Promise<AudioCacheStats> {
+  try {
+    const db = await openDB();
+    return await new Promise<AudioCacheStats>((resolve) => {
+      const cachedKeys = new Set<string>();
+      let totalBytes = 0;
+      const tx = db.transaction(STORES.BLOBS, 'readonly');
+      const req = tx.objectStore(STORES.BLOBS).openCursor();
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (cursor) {
+          cachedKeys.add(String(cursor.key));
+          const val = cursor.value as Blob | undefined;
+          if (val && typeof val.size === 'number') {
+            totalBytes += val.size;
+          }
+          cursor.continue();
+        } else {
+          resolve({
+            cachedCount: cachedKeys.size,
+            totalBytes,
+            cachedKeys,
+          });
+        }
+      };
+      req.onerror = () => resolve({ cachedCount: 0, totalBytes: 0, cachedKeys: new Set() });
+    });
+  } catch {
+    return { cachedCount: 0, totalBytes: 0, cachedKeys: new Set() };
+  }
+}
+
+export async function clearAllAudioBlobs(): Promise<void> {
+  try {
+    const db = await openDB();
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(STORES.BLOBS, 'readwrite');
+      tx.objectStore(STORES.BLOBS).clear();
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
     });

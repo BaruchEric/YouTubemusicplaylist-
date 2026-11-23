@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   Disc3,
   ExternalLink,
   FolderOpen,
   Gauge,
+  Link2,
   ListMusic,
   Loader2,
   Pause,
@@ -16,25 +17,124 @@ import {
   Shuffle,
   SkipBack,
   SkipForward,
+  SlidersHorizontal,
   Volume1,
   Volume2,
   VolumeX,
   Waves,
   X,
 } from 'lucide-react';
-import type {
-  AppliedReplayGainInfo,
-  AudioPlayerState,
-  LoudnessScanProgress,
-  ReplayGainMode,
-  ReplayGainTargetLufs,
+import {
+  CROSSFADE_PRESETS,
+  type AppliedReplayGainInfo,
+  type AudioPlayerState,
+  type CrossfadeCurve,
+  type LoudnessScanProgress,
+  type ReplayGainMode,
+  type ReplayGainTargetLufs,
 } from '../hooks/useAudioPlayer';
 import type { LocalTrack } from '../types/music';
+import {
+  DEFAULT_TRANSITION_SETTINGS,
+  describeUpcomingTransition,
+  evaluateCrossfadeCurve,
+} from '../utils/audioTransitions';
 import { formatGainDb, formatLufs } from '../utils/replayGain';
 import {
   buildTrackYouTubeMusicUrl,
   formatDuration,
 } from '../utils/youtubeLinks';
+
+const CROSSFADE_CURVE_OPTIONS: Array<{
+  value: CrossfadeCurve;
+  label: string;
+  caption: string;
+}> = [
+  { value: 'equal-power', label: 'Equal Power', caption: 'Steady level' },
+  { value: 'smooth-s', label: 'Smooth S', caption: 'Soft edges' },
+  { value: 'linear', label: 'Linear', caption: 'Uniform ramp' },
+];
+
+function CrossfadeCurvePreview({
+  curve,
+  enabled,
+}: {
+  curve: CrossfadeCurve;
+  enabled: boolean;
+}) {
+  const { outgoingPath, incomingPath } = useMemo(() => {
+    const steps = 28;
+    const width = 260;
+    const height = 40;
+    const padX = 4;
+    const padY = 5;
+    const usableW = width - padX * 2;
+    const usableH = height - padY * 2;
+
+    const outPts: string[] = [];
+    const inPts: string[] = [];
+
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const { outgoing, incoming } = evaluateCrossfadeCurve(t, curve);
+      const x = padX + t * usableW;
+      const yOut = padY + (1 - outgoing) * usableH;
+      const yIn = padY + (1 - incoming) * usableH;
+      outPts.push(`${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${yOut.toFixed(1)}`);
+      inPts.push(`${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${yIn.toFixed(1)}`);
+    }
+
+    return {
+      outgoingPath: outPts.join(' '),
+      incomingPath: inPts.join(' '),
+    };
+  }, [curve]);
+
+  return (
+    <div className="rounded bg-[#0E1015] border border-white/[0.07] px-2.5 py-2">
+      <div className="flex items-center justify-between text-[10px] font-mono text-[#717786] mb-1">
+        <span>Outgoing</span>
+        <span>Incoming</span>
+      </div>
+      <svg
+        viewBox="0 0 260 40"
+        className={`w-full h-9 overflow-visible transition-opacity ${enabled ? 'opacity-100' : 'opacity-35'}`}
+        aria-hidden="true"
+      >
+        <line
+          x1="4"
+          y1="20"
+          x2="256"
+          y2="20"
+          stroke="rgba(255,255,255,0.06)"
+          strokeDasharray="3 3"
+        />
+        <line
+          x1="130"
+          y1="4"
+          x2="130"
+          y2="36"
+          stroke="rgba(255,255,255,0.06)"
+          strokeDasharray="3 3"
+        />
+        <path
+          d={outgoingPath}
+          fill="none"
+          stroke="#9CA3AF"
+          strokeWidth="1.75"
+          strokeLinecap="round"
+        />
+        <path
+          d={incomingPath}
+          fill="none"
+          stroke="#FF4D64"
+          strokeWidth="1.75"
+          strokeLinecap="round"
+        />
+      </svg>
+    </div>
+  );
+}
 
 const TARGET_LUFS_OPTIONS: Array<{
   value: ReplayGainTargetLufs;
@@ -61,7 +161,12 @@ interface MiniPlayerProps {
   onToggleMute: () => void;
   onToggleShuffle: () => void;
   onCycleRepeat: () => void;
-  onCycleCrossfade: () => void;
+  onSetCrossfadeSeconds: (seconds: number) => void;
+  onSetCrossfadeCurve: (curve: CrossfadeCurve) => void;
+  onSetManualSkipCrossfade: (enabled: boolean) => void;
+  onSetGaplessPlayback: (enabled: boolean) => void;
+  onSetGaplessAlbumContinuity: (enabled: boolean) => void;
+  onResetTransitionSettings: () => void;
   onSetReplayGainMode: (mode: ReplayGainMode) => void;
   onSetReplayGainTargetLufs: (target: ReplayGainTargetLufs) => void;
   onSetReplayGainPreampDb: (db: number) => void;
@@ -90,7 +195,12 @@ export function MiniPlayer({
   onToggleMute,
   onToggleShuffle,
   onCycleRepeat,
-  onCycleCrossfade,
+  onSetCrossfadeSeconds,
+  onSetCrossfadeCurve,
+  onSetManualSkipCrossfade,
+  onSetGaplessPlayback,
+  onSetGaplessAlbumContinuity,
+  onResetTransitionSettings,
   onSetReplayGainMode,
   onSetReplayGainTargetLufs,
   onSetReplayGainPreampDb,
@@ -105,6 +215,136 @@ export function MiniPlayer({
 }: MiniPlayerProps) {
   const [queueOpen, setQueueOpen] = useState(false);
   const [replayGainOpen, setReplayGainOpen] = useState(false);
+  const [transitionsOpen, setTransitionsOpen] = useState(false);
+  const [shortcutNotice, setShortcutNotice] = useState<{ keyLabel: string; action: string } | null>(
+    null
+  );
+  const shortcutTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (shortcutTimerRef.current !== null) {
+        window.clearTimeout(shortcutTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!queueOpen && !replayGainOpen && !transitionsOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setQueueOpen(false);
+        setReplayGainOpen(false);
+        setTransitionsOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [queueOpen, replayGainOpen, transitionsOpen]);
+
+  // Global MiniPlayer keyboard shortcuts:
+  // Space = Play/Pause, Left/Right Arrows = Previous/Next Track, S = Shuffle, R = Repeat
+  useEffect(() => {
+    const flashShortcut = (keyLabel: string, action: string) => {
+      setShortcutNotice({ keyLabel, action });
+      if (shortcutTimerRef.current !== null) {
+        window.clearTimeout(shortcutTimerRef.current);
+      }
+      shortcutTimerRef.current = window.setTimeout(() => {
+        setShortcutNotice(null);
+      }, 1400);
+    };
+
+    const handleGlobalPlaybackKeys = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (
+          tag === 'INPUT' ||
+          tag === 'TEXTAREA' ||
+          tag === 'SELECT' ||
+          target.isContentEditable ||
+          target.getAttribute('role') === 'slider'
+        ) {
+          return;
+        }
+        if (target.closest('[role="dialog"], [aria-modal="true"], [role="menu"]')) {
+          return;
+        }
+      }
+
+      // Do not intercept transport shortcuts while a modal dialog is open
+      if (document.querySelector('[role="dialog"], [aria-modal="true"]')) {
+        return;
+      }
+
+      if (e.code === 'Space' || e.key === ' ') {
+        if (e.repeat) return;
+        if (target && target.tagName === 'A') return;
+        e.preventDefault();
+        onTogglePlay();
+        flashShortcut('Space', state.isPlaying ? 'Paused' : 'Playing');
+        return;
+      }
+
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        onPrev();
+        flashShortcut('←', 'Previous track');
+        return;
+      }
+
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        onNext();
+        flashShortcut('→', 'Next track');
+        return;
+      }
+
+      const lower = e.key.toLowerCase();
+      if (lower === 's') {
+        if (e.repeat) return;
+        e.preventDefault();
+        onToggleShuffle();
+        const nextShuffle =
+          state.shuffleMode === 'off'
+            ? 'Smart Shuffle'
+            : state.shuffleMode === 'smart'
+              ? 'Standard Shuffle'
+              : 'Shuffle Off';
+        flashShortcut('S', nextShuffle);
+        return;
+      }
+
+      if (lower === 'r') {
+        if (e.repeat) return;
+        e.preventDefault();
+        onCycleRepeat();
+        const nextRepeat =
+          state.repeatMode === 'off'
+            ? 'Repeat Queue'
+            : state.repeatMode === 'all'
+              ? 'Repeat Track'
+              : 'Repeat Off';
+        flashShortcut('R', nextRepeat);
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalPlaybackKeys);
+    return () => window.removeEventListener('keydown', handleGlobalPlaybackKeys);
+  }, [
+    onTogglePlay,
+    onPrev,
+    onNext,
+    onToggleShuffle,
+    onCycleRepeat,
+    state.isPlaying,
+    state.shuffleMode,
+    state.repeatMode,
+  ]);
 
   const effectiveDuration = state.duration || track?.duration || 0;
   const repeatLabel =
@@ -129,6 +369,70 @@ export function MiniPlayer({
             : 'RG Trk';
 
   const replayGainActive = state.replayGainMode !== 'off';
+
+  const upcomingTrack = useMemo(() => {
+    if (!track || queueTracks.length === 0) return null;
+    if (state.repeatMode === 'one') return track;
+    const idx = queueTracks.findIndex((t) => t.id === track.id);
+    if (idx >= 0 && idx + 1 < queueTracks.length) {
+      return queueTracks[idx + 1];
+    }
+    if (state.repeatMode === 'all' && queueTracks.length > 0) {
+      return queueTracks[0];
+    }
+    return null;
+  }, [track, queueTracks, state.repeatMode]);
+
+  const upcomingTransition = useMemo(
+    () =>
+      describeUpcomingTransition({
+        currentTrack: track,
+        nextTrack: upcomingTrack,
+        isShuffled: state.isShuffled,
+        settings: {
+          crossfadeSeconds: state.crossfadeSeconds,
+          crossfadeCurve: state.crossfadeCurve,
+          manualSkipCrossfade: state.manualSkipCrossfade,
+          gaplessPlayback: state.gaplessPlayback,
+          gaplessAlbumContinuity: state.gaplessAlbumContinuity,
+        },
+      }),
+    [
+      track,
+      upcomingTrack,
+      state.isShuffled,
+      state.crossfadeSeconds,
+      state.crossfadeCurve,
+      state.manualSkipCrossfade,
+      state.gaplessPlayback,
+      state.gaplessAlbumContinuity,
+    ]
+  );
+
+  const isTransitionDefault =
+    state.crossfadeSeconds === DEFAULT_TRANSITION_SETTINGS.crossfadeSeconds &&
+    state.crossfadeCurve === DEFAULT_TRANSITION_SETTINGS.crossfadeCurve &&
+    state.manualSkipCrossfade === DEFAULT_TRANSITION_SETTINGS.manualSkipCrossfade &&
+    state.gaplessPlayback === DEFAULT_TRANSITION_SETTINGS.gaplessPlayback &&
+    state.gaplessAlbumContinuity === DEFAULT_TRANSITION_SETTINGS.gaplessAlbumContinuity;
+
+  const crossfadeFormatted =
+    state.crossfadeSeconds === 0
+      ? 'Off'
+      : Number.isInteger(state.crossfadeSeconds)
+        ? `${state.crossfadeSeconds}s`
+        : `${state.crossfadeSeconds.toFixed(1)}s`;
+
+  const transitionButtonLabel =
+    state.crossfadeSeconds > 0
+      ? crossfadeFormatted
+      : state.gaplessPlayback
+        ? 'Gapless'
+        : 'Direct';
+
+  const isStandbyPreloaded = Boolean(
+    upcomingTrack && state.gaplessPreloadedTrackId === upcomingTrack.id
+  );
 
   return (
     <div className="relative h-[76px] px-4 sm:px-6 bg-[#12141A] border-t border-white/[0.09] flex items-center justify-between gap-4 shrink-0">
@@ -157,6 +461,257 @@ export function MiniPlayer({
               allowFullScreen
               className="w-full h-full border-0"
             />
+          </div>
+        </div>
+      )}
+
+      {/* Advanced Crossfade & Gapless Playback Settings Panel */}
+      {transitionsOpen && (
+        <div
+          role="dialog"
+          aria-label="Playback transitions and gapless settings"
+          className="absolute bottom-[82px] right-4 sm:right-6 z-40 w-[368px] max-w-[calc(100vw-2rem)] rounded-lg bg-[#151820] border border-white/[0.12] shadow-2xl overflow-hidden"
+        >
+          <div className="px-4 py-3 border-b border-white/[0.08] flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-white">
+                <SlidersHorizontal className="h-3.5 w-3.5 text-[#FF4D64] shrink-0" />
+                <span className="truncate">Playback Transitions</span>
+              </div>
+              <div className="text-[11px] text-[#8B92A2] truncate mt-0.5">
+                Crossfade overlap &amp; dual-deck gapless playback
+              </div>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              {!isTransitionDefault && (
+                <button
+                  type="button"
+                  onClick={onResetTransitionSettings}
+                  title="Reset transition settings to defaults"
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] text-[#8B92A2] hover:text-white hover:bg-white/[0.06] transition-colors whitespace-nowrap"
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  <span>Reset</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setTransitionsOpen(false)}
+                aria-label="Close playback transitions settings"
+                className="p-1 rounded text-[#8B92A2] hover:text-white transition-colors shrink-0"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+
+          <div className="p-4 space-y-4 max-h-[75vh] overflow-y-auto">
+            {/* Crossfade Duration Slider + Presets */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-xs font-medium text-[#D1D5DB]">Crossfade Duration</span>
+                <span className="font-mono text-xs tabular-nums text-white font-medium">
+                  {state.crossfadeSeconds === 0
+                    ? 'Off'
+                    : `${state.crossfadeSeconds.toFixed(1)}s`}
+                </span>
+              </div>
+
+              <input
+                type="range"
+                min={0}
+                max={12}
+                step={0.5}
+                value={state.crossfadeSeconds}
+                onChange={(e) => onSetCrossfadeSeconds(Number(e.target.value))}
+                aria-label="Crossfade duration in seconds"
+                className="w-full h-1 accent-[#FF1F3D] bg-white/15 rounded-lg cursor-pointer"
+              />
+              <div className="flex justify-between font-mono text-[10px] tabular-nums text-[#6B7280]">
+                <span>0s (Off)</span>
+                <span>6s</span>
+                <span>12s</span>
+              </div>
+
+              <div className="grid grid-cols-6 gap-1 pt-0.5">
+                {CROSSFADE_PRESETS.map((sec) => {
+                  const selected = state.crossfadeSeconds === sec;
+                  return (
+                    <button
+                      key={sec}
+                      type="button"
+                      onClick={() => onSetCrossfadeSeconds(sec)}
+                      className={`py-1 rounded text-[11px] font-mono tabular-nums font-medium transition-colors whitespace-nowrap ${
+                        selected
+                          ? 'bg-[#FF1F3D] text-white'
+                          : 'bg-white/[0.05] text-[#A1A7B5] hover:bg-white/[0.09] hover:text-white'
+                      }`}
+                    >
+                      {sec === 0 ? 'Off' : `${sec}s`}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Crossfade Curve Selector + Live Curve Shape */}
+            <div
+              className={`space-y-2 ${
+                state.crossfadeSeconds === 0 ? 'opacity-45 pointer-events-none' : ''
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-[#D1D5DB]">Fade Curve</span>
+                <span className="text-[11px] text-[#8B92A2]">
+                  {CROSSFADE_CURVE_OPTIONS.find((c) => c.value === state.crossfadeCurve)?.caption}
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-1.5">
+                {CROSSFADE_CURVE_OPTIONS.map((opt) => {
+                  const selected = state.crossfadeCurve === opt.value;
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => onSetCrossfadeCurve(opt.value)}
+                      className={`px-2 py-1.5 rounded border text-center transition-colors ${
+                        selected
+                          ? 'bg-[#FF1F3D]/15 border-[#FF1F3D]/50 text-white'
+                          : 'bg-white/[0.03] border-white/[0.07] text-[#9CA3AF] hover:text-white hover:bg-white/[0.06]'
+                      }`}
+                    >
+                      <div className="text-xs font-medium whitespace-nowrap">{opt.label}</div>
+                    </button>
+                  );
+                })}
+              </div>
+              <CrossfadeCurvePreview
+                curve={state.crossfadeCurve}
+                enabled={state.crossfadeSeconds > 0}
+              />
+            </div>
+
+            {/* Manual Skip Fade Toggle */}
+            <div
+              className={`flex items-center justify-between gap-3 ${
+                state.crossfadeSeconds === 0 ? 'opacity-45 pointer-events-none' : ''
+              }`}
+            >
+              <div className="min-w-0">
+                <div className="text-xs font-medium text-white">Fade on Manual Skip</div>
+                <div className="text-[11px] text-[#8B92A2]">
+                  Apply a quick fade (max 2.5s) on Next, Previous, or track click
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={state.manualSkipCrossfade}
+                onClick={() => onSetManualSkipCrossfade(!state.manualSkipCrossfade)}
+                className={`relative h-5 w-9 rounded-full transition-colors shrink-0 ${
+                  state.manualSkipCrossfade ? 'bg-[#FF1F3D]' : 'bg-white/15'
+                }`}
+              >
+                <span
+                  className={`block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                    state.manualSkipCrossfade ? 'translate-x-[18px]' : 'translate-x-[3px]'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* Gapless Playback Controls */}
+            <div className="pt-3.5 border-t border-white/[0.08] space-y-3.5">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-white">
+                    <Link2 className="h-3.5 w-3.5 text-[#FF4D64] shrink-0" />
+                    <span>Gapless Playback</span>
+                  </div>
+                  <div className="text-[11px] text-[#8B92A2] mt-0.5">
+                    Pre-buffers the next track on the standby deck for zero-gap handoffs
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={state.gaplessPlayback}
+                  onClick={() => onSetGaplessPlayback(!state.gaplessPlayback)}
+                  className={`relative h-5 w-9 rounded-full transition-colors shrink-0 ${
+                    state.gaplessPlayback ? 'bg-[#FF1F3D]' : 'bg-white/15'
+                  }`}
+                >
+                  <span
+                    className={`block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                      state.gaplessPlayback ? 'translate-x-[18px]' : 'translate-x-[3px]'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              <div
+                className={`flex items-center justify-between gap-3 ${
+                  !state.gaplessPlayback || state.crossfadeSeconds === 0
+                    ? 'opacity-45 pointer-events-none'
+                    : ''
+                }`}
+              >
+                <div className="min-w-0">
+                  <div className="text-xs font-medium text-white">Consecutive Album Continuity</div>
+                  <div className="text-[11px] text-[#8B92A2] mt-0.5">
+                    Switch to gapless between sequential tracks from the same album
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={state.gaplessAlbumContinuity}
+                  onClick={() => onSetGaplessAlbumContinuity(!state.gaplessAlbumContinuity)}
+                  className={`relative h-5 w-9 rounded-full transition-colors shrink-0 ${
+                    state.gaplessAlbumContinuity ? 'bg-[#FF1F3D]' : 'bg-white/15'
+                  }`}
+                >
+                  <span
+                    className={`block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                      state.gaplessAlbumContinuity ? 'translate-x-[18px]' : 'translate-x-[3px]'
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
+
+            {/* Upcoming Boundary Readout */}
+            <div className="pt-3 border-t border-white/[0.08] space-y-1 text-[11px]">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[#717786]">Next Transition</span>
+                <span className="font-mono tabular-nums text-white font-medium">
+                  {upcomingTransition.label}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[#717786] shrink-0">Upcoming Track</span>
+                <span className="text-[#D1D5DB] truncate text-right">
+                  {upcomingTrack ? upcomingTrack.title : 'End of queue'}
+                </span>
+              </div>
+              {state.gaplessPlayback && upcomingTrack && state.playbackMode === 'local' && (
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-[#717786]">Standby Deck</span>
+                  <span
+                    className={`font-mono tabular-nums ${
+                      isStandbyPreloaded ? 'text-[#22C55E]' : 'text-[#8B92A2]'
+                    }`}
+                  >
+                    {isStandbyPreloaded ? 'Pre-buffered' : 'Preloads 15s before end'}
+                  </span>
+                </div>
+              )}
+              {state.playbackMode === 'youtube' && (
+                <div className="text-[#8B92A2] pt-1">
+                  Crossfade &amp; gapless pre-buffering apply to local audio playback decks.
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -568,7 +1123,12 @@ export function MiniPlayer({
                 <span className="text-[13px] font-medium text-white truncate">{track.title}</span>
               </div>
 
-              {state.error ? (
+              {state.isFetchingFromDrive ? (
+                <div className="flex items-center gap-1.5 text-[11px] text-[#93C5FD] mt-0.5 truncate">
+                  <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+                  <span className="truncate">Caching song from Google Drive…</span>
+                </div>
+              ) : state.error ? (
                 <div className="flex items-center gap-2 text-[11px] mt-0.5 min-w-0">
                   <span className="text-[#F59E0B] truncate" title={state.error}>
                     {state.error}
@@ -622,25 +1182,37 @@ export function MiniPlayer({
       </div>
 
       {/* Center: Transport Controls + Scrubber */}
-      <div className="flex-1 max-w-xl flex flex-col items-center gap-1.5">
+      <div className="relative flex-1 max-w-xl flex flex-col items-center gap-1.5">
+        {shortcutNotice && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="pointer-events-none absolute -top-9 left-1/2 -translate-x-1/2 z-30 inline-flex items-center gap-2 rounded-md border border-white/[0.12] bg-[#111319]/95 px-2.5 py-1 shadow-xl text-xs whitespace-nowrap"
+          >
+            <span className="font-mono text-[10px] text-[#FF4D64] border border-white/[0.1] rounded px-1 py-0.5 leading-none">
+              {shortcutNotice.keyLabel}
+            </span>
+            <span className="text-white font-medium">{shortcutNotice.action}</span>
+          </div>
+        )}
         <div className="flex items-center gap-2.5 sm:gap-3.5">
           <button
             type="button"
             onClick={onToggleShuffle}
             aria-label={
               state.shuffleMode === 'smart'
-                ? 'Smart Shuffle active (prioritizes matched YouTube IDs & complete metadata). Click for Standard Shuffle.'
+                ? 'Smart Shuffle active (prioritizes matched YouTube IDs & complete metadata). Click or press S for Standard Shuffle.'
                 : state.shuffleMode === 'standard'
-                  ? 'Standard Shuffle active. Click to disable shuffle.'
-                  : 'Shuffle off. Click to enable Smart Shuffle.'
+                  ? 'Standard Shuffle active. Click or press S to disable shuffle.'
+                  : 'Shuffle off. Click or press S to enable Smart Shuffle.'
             }
             aria-pressed={state.shuffleMode !== 'off'}
             title={
               state.shuffleMode === 'smart'
-                ? 'Smart Shuffle on — prioritizes matched YouTube IDs & complete metadata (click for Standard Shuffle)'
+                ? 'Smart Shuffle on — prioritizes matched YouTube IDs & complete metadata (S)'
                 : state.shuffleMode === 'standard'
-                  ? 'Standard Shuffle on (click to turn off)'
-                  : 'Shuffle off (click for Smart Shuffle)'
+                  ? 'Standard Shuffle on (S)'
+                  : 'Shuffle off — enable Smart Shuffle (S)'
             }
             className={`inline-flex items-center gap-1 px-1.5 py-1 rounded text-[11px] font-medium transition-colors whitespace-nowrap ${
               state.shuffleMode === 'smart'
@@ -657,8 +1229,8 @@ export function MiniPlayer({
           <button
             type="button"
             onClick={onPrev}
-            aria-label="Previous track"
-            title="Previous track"
+            aria-label="Previous track (Left Arrow)"
+            title="Previous track (←)"
             className="p-1.5 text-[#A1A7B5] hover:text-white transition-colors"
           >
             <SkipBack className="h-4 w-4" />
@@ -667,11 +1239,13 @@ export function MiniPlayer({
           <button
             type="button"
             onClick={onTogglePlay}
-            aria-label={state.isPlaying ? 'Pause' : 'Play'}
+            aria-label={state.isPlaying ? 'Pause (Space)' : 'Play (Space)'}
             title={state.isPlaying ? 'Pause (Space)' : 'Play (Space)'}
             className="h-9 w-9 rounded-full bg-white text-[#0B0C0E] hover:bg-[#E5E7EB] flex items-center justify-center transition-colors shrink-0"
           >
-            {state.isPlaying ? (
+            {state.isFetchingFromDrive ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : state.isPlaying ? (
               <Pause className="h-4 w-4 fill-current" />
             ) : (
               <Play className="h-4 w-4 fill-current ml-0.5" />
@@ -681,8 +1255,8 @@ export function MiniPlayer({
           <button
             type="button"
             onClick={onNext}
-            aria-label="Next track"
-            title="Next track"
+            aria-label="Next track (Right Arrow)"
+            title="Next track (→)"
             className="p-1.5 text-[#A1A7B5] hover:text-white transition-colors"
           >
             <SkipForward className="h-4 w-4" />
@@ -691,8 +1265,8 @@ export function MiniPlayer({
           <button
             type="button"
             onClick={onCycleRepeat}
-            aria-label={repeatLabel}
-            title={repeatLabel}
+            aria-label={`${repeatLabel} (R)`}
+            title={`${repeatLabel} (R)`}
             className={`p-1.5 rounded transition-colors ${
               state.repeatMode !== 'off'
                 ? 'text-[#FF4D64] bg-[#FF1F3D]/10'
@@ -708,34 +1282,37 @@ export function MiniPlayer({
 
           <button
             type="button"
-            onClick={onCycleCrossfade}
-            aria-label={
+            onClick={() => {
+              setTransitionsOpen((v) => !v);
+              setReplayGainOpen(false);
+              setQueueOpen(false);
+            }}
+            aria-label="Crossfade and gapless playback settings"
+            aria-expanded={transitionsOpen}
+            title={`Playback transitions: ${
               state.crossfadeSeconds > 0
-                ? `Crossfade ${state.crossfadeSeconds} seconds`
+                ? `${crossfadeFormatted} crossfade`
                 : 'Crossfade off'
-            }
-            aria-pressed={state.crossfadeSeconds > 0}
-            title={
-              state.crossfadeSeconds > 0
-                ? `Crossfade: ${state.crossfadeSeconds}s (click to change)`
-                : 'Crossfade: Off (click to enable)'
-            }
-            className={`hidden sm:inline-flex items-center gap-1 px-1.5 py-1 rounded text-[11px] font-mono tabular-nums transition-colors whitespace-nowrap ${
-              state.isCrossfading
-                ? 'text-white bg-[#FF1F3D]/25'
-                : state.crossfadeSeconds > 0
-                  ? 'text-[#FF4D64] bg-[#FF1F3D]/10 hover:bg-[#FF1F3D]/15'
-                  : 'text-[#717786] hover:text-white'
+            } · Gapless ${state.gaplessPlayback ? 'on' : 'off'} (click to configure)`}
+            className={`inline-flex items-center gap-1 px-1.5 py-1 rounded text-[11px] font-mono tabular-nums transition-colors whitespace-nowrap ${
+              transitionsOpen
+                ? 'text-white bg-white/[0.14]'
+                : state.isCrossfading
+                  ? 'text-white bg-[#FF1F3D]/25'
+                  : state.crossfadeSeconds > 0 || state.gaplessPlayback
+                    ? 'text-[#FF4D64] bg-[#FF1F3D]/10 hover:bg-[#FF1F3D]/15'
+                    : 'text-[#717786] hover:text-white'
             }`}
           >
             <Waves className="h-3.5 w-3.5 shrink-0" />
-            <span>{state.crossfadeSeconds > 0 ? `${state.crossfadeSeconds}s` : 'Off'}</span>
+            <span>{transitionButtonLabel}</span>
           </button>
 
           <button
             type="button"
             onClick={() => {
               setReplayGainOpen((v) => !v);
+              setTransitionsOpen(false);
               setQueueOpen(false);
             }}
             aria-label="Loudness normalization (ReplayGain) settings"
@@ -812,6 +1389,7 @@ export function MiniPlayer({
           onClick={() => {
             setQueueOpen((v) => !v);
             setReplayGainOpen(false);
+            setTransitionsOpen(false);
           }}
           aria-label="Toggle playback queue"
           aria-expanded={queueOpen}

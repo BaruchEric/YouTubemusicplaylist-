@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import type { ShuffleMode } from '../hooks/useAudioPlayer';
 import type { LocalTrack, SmartPlaylist, TrackPlayStats } from '../types/music';
-import { inferTrackGenre } from '../utils/genreInference';
+import { computeTrackStatistics, inferTrackGenre } from '../utils/genreInference';
 import { SMART_SORT_OPTIONS, summarizeSmartRule } from '../utils/smartPlaylists';
 import {
   buildInstantQueueBatches,
@@ -23,6 +23,7 @@ import {
   formatDuration,
   formatRelativeTime,
 } from '../utils/youtubeLinks';
+import { SmartPlaylistGenreBreakdown } from './SmartPlaylistGenreBreakdown';
 
 interface SmartPlaylistViewProps {
   smartPlaylist: SmartPlaylist;
@@ -60,19 +61,42 @@ export function SmartPlaylistView({
   onOpenBatchTagEditor,
 }: SmartPlaylistViewProps) {
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedGenreFilter, setSelectedGenreFilter] = useState<string | null>(null);
 
-  const filteredTracks = useMemo(() => {
+  const trackGenreMap = useMemo(
+    () => computeTrackStatistics(tracks).trackGenreMap,
+    [tracks]
+  );
+
+  const searchFilteredTracks = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     if (!q) return tracks;
-    return tracks.filter(
-      (t) =>
+    return tracks.filter((t) => {
+      const resolvedGenre = (trackGenreMap.get(t.id)?.genre ?? inferTrackGenre(t).genre).toLowerCase();
+      return (
         t.title.toLowerCase().includes(q) ||
         t.artist.toLowerCase().includes(q) ||
         t.album.toLowerCase().includes(q) ||
-        inferTrackGenre(t).genre.toLowerCase().includes(q) ||
+        resolvedGenre.includes(q) ||
         t.format.toLowerCase().includes(q)
+      );
+    });
+  }, [tracks, searchQuery, trackGenreMap]);
+
+  const effectiveSelectedGenre = useMemo(() => {
+    if (!selectedGenreFilter) return null;
+    const exists = searchFilteredTracks.some(
+      (t) => (trackGenreMap.get(t.id)?.genre ?? inferTrackGenre(t).genre) === selectedGenreFilter
     );
-  }, [tracks, searchQuery]);
+    return exists ? selectedGenreFilter : null;
+  }, [selectedGenreFilter, searchFilteredTracks, trackGenreMap]);
+
+  const filteredTracks = useMemo(() => {
+    if (!effectiveSelectedGenre) return searchFilteredTracks;
+    return searchFilteredTracks.filter(
+      (t) => (trackGenreMap.get(t.id)?.genre ?? inferTrackGenre(t).genre) === effectiveSelectedGenre
+    );
+  }, [searchFilteredTracks, effectiveSelectedGenre, trackGenreMap]);
 
   const totalDurationSec = useMemo(
     () => tracks.reduce((sum, t) => sum + (t.duration || 0), 0),
@@ -275,6 +299,16 @@ export function SmartPlaylistView({
           </section>
         )}
 
+        {/* Genre Breakdown Pie Chart (Recharts) for current smart playlist's filtered tracks */}
+        {searchFilteredTracks.length > 0 && (
+          <SmartPlaylistGenreBreakdown
+            tracks={searchFilteredTracks}
+            selectedGenre={effectiveSelectedGenre}
+            onSelectGenre={setSelectedGenreFilter}
+            onPlayList={onPlayList}
+          />
+        )}
+
         {/* Search & Batch Actions Bar */}
         {tracks.length > 0 && (
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -356,7 +390,7 @@ export function SmartPlaylistView({
                   {filteredTracks.map((track, idx) => {
                     const isActive = activePlayingTrackId === track.id;
                     const isPlayingRow = isActive && isAudioPlaying;
-                    const genre = inferTrackGenre(track).genre;
+                    const genre = trackGenreMap.get(track.id)?.genre ?? inferTrackGenre(track).genre;
                     const plays = playStats[track.id]?.playCount ?? track.playCount ?? 0;
                     const playable = hasPlayableFile(track.fileKey) || Boolean(track.youtubeVideoId);
 

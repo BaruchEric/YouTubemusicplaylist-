@@ -20,6 +20,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  ShieldAlert,
   Sparkles,
   Tags,
   Trash2,
@@ -28,16 +29,16 @@ import {
 } from 'lucide-react';
 import type { LocalTrack, Playlist, TrackPlayStats, WatchedFolderInfo } from '../types/music';
 import {
+  summarizeIntegrityIssues,
+  type TrackIntegrityScanResult,
+} from '../utils/audioIntegrity';
+import {
   exportCatalogToCSV,
   exportCatalogToJSON,
   exportCatalogToM3U8,
   findDuplicateGroups,
 } from '../utils/duplicateDetector';
-import {
-  computeTrackStatistics,
-  inferTrackGenre,
-  type InferredGenreResult,
-} from '../utils/genreInference';
+import { computeTrackStatistics } from '../utils/genreInference';
 import { evaluateSmartTrackSearch } from '../utils/smartSearch';
 import {
   buildTrackYouTubeMusicUrl,
@@ -47,6 +48,10 @@ import {
   formatTotalRuntime,
   triggerFileDownload,
 } from '../utils/youtubeLinks';
+import {
+  AudioIntegrityPanel,
+  type TrackIntegrityRepairPatch,
+} from './AudioIntegrityPanel';
 import { DuplicateFinderPanel } from './DuplicateFinderPanel';
 import { LibraryCleanupPanel } from './LibraryCleanupPanel';
 import { TrackStatisticsPanel } from './TrackStatisticsPanel';
@@ -65,6 +70,8 @@ interface ScannerViewProps {
   initialGroupByGenre?: boolean;
   initialSearchQuery?: string;
   initialOpenCleanup?: boolean;
+  initialOpenDuplicates?: boolean;
+  initialOpenIntegrity?: boolean;
   watchedFolder: WatchedFolderInfo | null;
   autoWatchIntervalSec: 0 | 30 | 120 | 300;
   isScanning: boolean;
@@ -72,6 +79,9 @@ interface ScannerViewProps {
   scanNotice: string | null;
   isHashingDuplicates: boolean;
   hashProgress: { processed: number; total: number } | null;
+  integrityResults: Record<string, TrackIntegrityScanResult>;
+  isScanningIntegrity: boolean;
+  integrityProgress: { processed: number; total: number } | null;
   activePlayingTrackId: string | null;
   isAudioPlaying: boolean;
   hasPlayableFile: (fileKey: string) => boolean;
@@ -81,6 +91,8 @@ interface ScannerViewProps {
   onRescanFolder: () => void;
   onChangeAutoWatch: (sec: 0 | 30 | 120 | 300) => void;
   onComputeMissingHashes: () => void;
+  onRunIntegrityScan: () => void;
+  onRepairTrackMetadata: (patches: Record<string, TrackIntegrityRepairPatch>) => void;
   onRequestRemoveDuplicates: (removeIds: string[], remapToKeep: Record<string, string>) => void;
   onRemoveMissingTracks: (trackIds: string[]) => void;
   onPlayTrack: (trackId: string, queueIds: string[]) => void;
@@ -102,6 +114,8 @@ export function ScannerView({
   initialGroupByGenre = false,
   initialSearchQuery = '',
   initialOpenCleanup = false,
+  initialOpenDuplicates = false,
+  initialOpenIntegrity = false,
   watchedFolder,
   autoWatchIntervalSec,
   isScanning,
@@ -109,6 +123,9 @@ export function ScannerView({
   scanNotice,
   isHashingDuplicates,
   hashProgress,
+  integrityResults,
+  isScanningIntegrity,
+  integrityProgress,
   activePlayingTrackId,
   isAudioPlaying,
   hasPlayableFile,
@@ -118,6 +135,8 @@ export function ScannerView({
   onRescanFolder,
   onChangeAutoWatch,
   onComputeMissingHashes,
+  onRunIntegrityScan,
+  onRepairTrackMetadata,
   onRequestRemoveDuplicates,
   onRemoveMissingTracks,
   onPlayTrack,
@@ -164,7 +183,8 @@ export function ScannerView({
   const [isDragging, setIsDragging] = useState(false);
   const [bannerFailed, setBannerFailed] = useState(false);
   const [targetPlaylistId, setTargetPlaylistId] = useState('');
-  const [showDuplicateFinder, setShowDuplicateFinder] = useState(false);
+  const [showDuplicateFinder, setShowDuplicateFinder] = useState(initialOpenDuplicates);
+  const [showAudioIntegrity, setShowAudioIntegrity] = useState(initialOpenIntegrity);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const exportMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -203,15 +223,35 @@ export function ScannerView({
     [tracks]
   );
 
-  const trackGenreMap = useMemo(() => {
-    const map = new Map<string, InferredGenreResult>();
-    for (const t of tracks) {
-      map.set(t.id, inferTrackGenre(t));
+  useEffect(() => {
+    if (initialOpenDuplicates) {
+      setShowDuplicateFinder(true);
+      if (unhashedCount > 0 && !isHashingDuplicates) {
+        onComputeMissingHashes();
+      }
     }
-    return map;
-  }, [tracks]);
+    // Only trigger automatically when initialOpenDuplicates flips on mount/preset change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialOpenDuplicates]);
+
+  useEffect(() => {
+    if (initialOpenIntegrity) {
+      setShowAudioIntegrity(true);
+      if (tracks.length > 0 && !isScanningIntegrity) {
+        onRunIntegrityScan();
+      }
+    }
+    // Trigger deep integrity scan automatically when opened from Quick Actions preset
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialOpenIntegrity]);
+
+  const integritySummary = useMemo(
+    () => summarizeIntegrityIssues(tracks, integrityResults),
+    [tracks, integrityResults]
+  );
 
   const allStats = useMemo(() => computeTrackStatistics(tracks), [tracks]);
+  const trackGenreMap = allStats.trackGenreMap;
 
   const effectiveGenreFilter = useMemo(() => {
     if (genreFilter === 'all') return 'all';
@@ -373,6 +413,14 @@ export function ScannerView({
     setShowDuplicateFinder(nextOpen);
     if (nextOpen && unhashedCount > 0 && !isHashingDuplicates) {
       onComputeMissingHashes();
+    }
+  };
+
+  const handleToggleAudioIntegrity = () => {
+    const nextOpen = !showAudioIntegrity;
+    setShowAudioIntegrity(nextOpen);
+    if (nextOpen && integritySummary.deepScannedCount === 0 && tracks.length > 0 && !isScanningIntegrity) {
+      onRunIntegrityScan();
     }
   };
 
@@ -833,6 +881,28 @@ export function ScannerView({
 
           <button
             type="button"
+            onClick={handleToggleAudioIntegrity}
+            aria-expanded={showAudioIntegrity}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium border transition-colors whitespace-nowrap ${
+              showAudioIntegrity
+                ? 'text-white bg-[#1E222D] border-[#FF1F3D]/60'
+                : integritySummary.headerIssueCount > 0
+                  ? 'text-[#FCA5A5] bg-[#161920] border-[#EF4444]/40 hover:bg-[#1E222B]'
+                  : integritySummary.totalFlagged > 0
+                    ? 'text-[#F59E0B] bg-[#161920] border-[#F59E0B]/35 hover:bg-[#1E222B]'
+                    : 'text-[#D1D5DB] bg-[#161920] border-white/[0.09] hover:text-white hover:bg-[#1E222B]'
+            }`}
+          >
+            <ShieldAlert className="h-3.5 w-3.5" />
+            <span>
+              {integritySummary.totalFlagged > 0
+                ? `Integrity (${integritySummary.totalFlagged})`
+                : 'Integrity'}
+            </span>
+          </button>
+
+          <button
+            type="button"
             onClick={handleToggleDuplicateFinder}
             aria-expanded={showDuplicateFinder}
             className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium border transition-colors whitespace-nowrap ${
@@ -1026,6 +1096,26 @@ export function ScannerView({
             Clear query
           </button>
         </div>
+      )}
+
+      {/* Audio Integrity Diagnostics Panel (Corrupt Headers & Incomplete Durations) */}
+      {showAudioIntegrity && (
+        <AudioIntegrityPanel
+          tracks={tracks}
+          deepResults={integrityResults}
+          isScanning={isScanningIntegrity}
+          scanProgress={integrityProgress}
+          activePlayingTrackId={activePlayingTrackId}
+          isAudioPlaying={isAudioPlaying}
+          hasPlayableFile={hasPlayableFile}
+          onRunDeepScan={onRunIntegrityScan}
+          onRepairTracks={onRepairTrackMetadata}
+          onPlayTrack={onPlayTrack}
+          onInspectTrack={onInspectTrack}
+          onOpenBatchTagEditor={onOpenBatchTagEditor}
+          onRequestDeleteTracks={onRequestDeleteTracks}
+          onClose={() => setShowAudioIntegrity(false)}
+        />
       )}
 
       {/* Library Cleanup Utility Panel (Missing on Device Tracks) */}

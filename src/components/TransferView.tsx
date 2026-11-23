@@ -1,6 +1,16 @@
 import { useRef, useState } from 'react';
 import { Check, Copy, Download, ExternalLink, FileText, Upload } from 'lucide-react';
-import type { LocalTrack, Playlist } from '../types/music';
+import type {
+  DeviceFolderBinding,
+  DriveFolderMapping,
+  LocalTrack,
+  Playlist,
+  SmartPlaylist,
+  SyncDeviceProfile,
+  SyncEvent,
+} from '../types/music';
+import type { CrateSyncLibraryBackupPayload, DriveFileItem } from '../utils/googleDriveApi';
+import type { ScannedFileEntry } from '../utils/syncEngine';
 import {
   buildInstantQueueBatches,
   exportPlaylistToCSV,
@@ -11,14 +21,93 @@ import {
   triggerFileDownload,
   type ImportedTrackSeed,
 } from '../utils/youtubeLinks';
+import { GoogleDriveTransferSection } from './GoogleDriveTransferSection';
 
 interface TransferViewProps {
+  tracks: LocalTrack[];
   playlists: Playlist[];
+  smartPlaylists: SmartPlaylist[];
+  syncHistory: SyncEvent[];
+  watchedFolderName: string | null;
+  availableLocalFolders: string[];
+  currentDevice: SyncDeviceProfile;
+  devices: SyncDeviceProfile[];
+  folderMappings: DriveFolderMapping[];
   trackMap: Map<string, LocalTrack>;
+  storedAudioKeys: Set<string>;
+  deviceCacheBytes: number;
+  hasPlayableFile: (fileKey: string) => boolean;
+  getCachedAudioBlob: (fileKey: string) => Promise<Blob | null>;
+  onRenameCurrentDevice: (newName: string) => void;
+  onSaveFolderMapping: (params: {
+    driveFolderId: string;
+    driveFolderName: string;
+    binding: DeviceFolderBinding;
+  }) => void;
+  onUnbindDeviceFromMapping: (mappingId: string, deviceId: string) => void;
+  onDeleteFolderMapping: (mappingId: string) => void;
+  onMarkMappingSynced: (mappingId: string, deviceId: string) => void;
   onImportPlaylist: (name: string, seeds: ImportedTrackSeed[]) => void;
+  onRestoreLibraryBackup: (
+    backup: CrateSyncLibraryBackupPayload,
+    mode: 'merge' | 'replace'
+  ) => void;
+  onSyncFromDriveSourceOfTruth: (payload: {
+    manifest: CrateSyncLibraryBackupPayload | null;
+    driveAudioFiles: DriveFileItem[];
+    folderLabel: string;
+    mappedDriveFolderId?: string | null;
+    replaceWithSourceOfTruth: boolean;
+  }) => { addedSongs: number; updatedSongs: number; playlistCount: number; syncedTrackIds: string[] };
+  onLinkUploadedDriveTracks: (
+    updates: Array<{ trackId: string; driveFileId: string; driveModifiedTime: string; drivePath: string }>
+  ) => void;
+  onCacheDriveTrackAudio: (trackId: string, blob: Blob, driveFile?: DriveFileItem) => Promise<void>;
+  onEvictTrackCache: (fileKeys: string[]) => Promise<void>;
+  onClearAllDeviceCache: () => Promise<void>;
+  onPlayTrack: (trackId: string, queueIds?: string[]) => void;
+  onIngestLocalFolderEntries?: (
+    entries: ScannedFileEntry[],
+    folderRootName: string
+  ) => Promise<void> | void;
+  onNotify?: (payload: {
+    title: string;
+    description?: string;
+    tone?: 'neutral' | 'success' | 'warning';
+  }) => void;
 }
 
-export function TransferView({ playlists, trackMap, onImportPlaylist }: TransferViewProps) {
+export function TransferView({
+  tracks,
+  playlists,
+  smartPlaylists,
+  syncHistory,
+  watchedFolderName,
+  availableLocalFolders,
+  currentDevice,
+  devices,
+  folderMappings,
+  trackMap,
+  storedAudioKeys,
+  deviceCacheBytes,
+  hasPlayableFile,
+  getCachedAudioBlob,
+  onRenameCurrentDevice,
+  onSaveFolderMapping,
+  onUnbindDeviceFromMapping,
+  onDeleteFolderMapping,
+  onMarkMappingSynced,
+  onImportPlaylist,
+  onRestoreLibraryBackup,
+  onSyncFromDriveSourceOfTruth,
+  onLinkUploadedDriveTracks,
+  onCacheDriveTrackAudio,
+  onEvictTrackCache,
+  onClearAllDeviceCache,
+  onPlayTrack,
+  onIngestLocalFolderEntries,
+  onNotify,
+}: TransferViewProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedExportPlaylistId, setSelectedExportPlaylistId] = useState(
     playlists[0]?.id ?? ''
@@ -88,13 +177,46 @@ export function TransferView({ playlists, trackMap, onImportPlaylist }: Transfer
       <div className="max-w-5xl mx-auto space-y-8">
         <div className="pb-5 border-b border-white/[0.08]">
           <h1 className="font-display text-2xl font-semibold tracking-tight text-white">
-            Import &amp; Export Library
+            Cloud Sync, Import &amp; Export
           </h1>
           <p className="mt-1 text-sm text-[#8B92A2]">
-            Transfer playlists to your YouTube Music library via instant queue links, CSV, M3U8, or
-            import existing local playlist files.
+            Use Google Drive as your master library source of truth, map folders across playing
+            devices, cache songs offline, and transfer playlists to YouTube Music.
           </p>
         </div>
+
+        {/* Google Drive Source-of-Truth Sync, Cross-Device Folder Mappings & Playing Device Cache */}
+        <GoogleDriveTransferSection
+          tracks={tracks}
+          playlists={playlists}
+          smartPlaylists={smartPlaylists}
+          syncHistory={syncHistory}
+          watchedFolderName={watchedFolderName}
+          availableLocalFolders={availableLocalFolders}
+          currentDevice={currentDevice}
+          devices={devices}
+          folderMappings={folderMappings}
+          trackMap={trackMap}
+          storedAudioKeys={storedAudioKeys}
+          deviceCacheBytes={deviceCacheBytes}
+          hasPlayableFile={hasPlayableFile}
+          getCachedAudioBlob={getCachedAudioBlob}
+          onRenameCurrentDevice={onRenameCurrentDevice}
+          onSaveFolderMapping={onSaveFolderMapping}
+          onUnbindDeviceFromMapping={onUnbindDeviceFromMapping}
+          onDeleteFolderMapping={onDeleteFolderMapping}
+          onMarkMappingSynced={onMarkMappingSynced}
+          onImportPlaylist={onImportPlaylist}
+          onRestoreLibraryBackup={onRestoreLibraryBackup}
+          onSyncFromDriveSourceOfTruth={onSyncFromDriveSourceOfTruth}
+          onLinkUploadedDriveTracks={onLinkUploadedDriveTracks}
+          onCacheDriveTrackAudio={onCacheDriveTrackAudio}
+          onEvictTrackCache={onEvictTrackCache}
+          onClearAllDeviceCache={onClearAllDeviceCache}
+          onPlayTrack={onPlayTrack}
+          onIngestLocalFolderEntries={onIngestLocalFolderEntries}
+          onNotify={onNotify}
+        />
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
           {/* Column 1: Export to YouTube Music / Local Formats */}

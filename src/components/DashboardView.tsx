@@ -1,10 +1,14 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight,
+  ArrowUp,
   BarChart3,
   Check,
   CheckCircle2,
+  ChevronDown,
+  Compass,
   Disc3,
+  Download,
   ExternalLink,
   FileAudio,
   FolderOpen,
@@ -27,6 +31,7 @@ import type {
   TrackPlayStats,
   WatchedFolderInfo,
 } from '../types/music';
+import type { TrackIntegrityScanResult } from '../utils/audioIntegrity';
 import { computeTrackStatistics, inferTrackGenre } from '../utils/genreInference';
 import type { ShuffleMode } from '../utils/smartShuffle';
 import {
@@ -36,11 +41,24 @@ import {
   formatFileSize,
   formatRelativeTime,
   formatTotalRuntime,
+  triggerFileDownload,
 } from '../utils/youtubeLinks';
 import { AlbumArtGallery } from './AlbumArtGallery';
+import { DailyListeningChart } from './DailyListeningChart';
+import {
+  DashboardJumpMenu,
+  type DashboardSectionId,
+  type DashboardSectionItem,
+} from './DashboardJumpMenu';
+import { DashboardQuickActionsMenu } from './DashboardQuickActionsMenu';
+import { DashboardSmartFilter } from './DashboardSmartFilter';
 import { GenreDistributionChart } from './GenreDistributionChart';
+import { GlobalGenreDistributionChart } from './GlobalGenreDistributionChart';
+import { ListeningActivityHeatmap } from './ListeningActivityHeatmap';
 import { ListeningActivitySection } from './ListeningActivitySection';
 import { RecommendedForYou } from './RecommendedForYou';
+import { WeeklyListeningHabitsChart } from './WeeklyListeningHabitsChart';
+import { WeeklyTracksAddedChart } from './WeeklyTracksAddedChart';
 
 const STUDIO_BANNER_SRC = '/src/assets/images/studio_audio_banner_1795114389740.jpg';
 
@@ -64,8 +82,16 @@ interface DashboardViewProps {
   onRescanFolder: () => void;
   onOpenScanner: (
     filter?: 'all' | 'unmatched' | 'matched' | 'missing',
-    options?: { genre?: string; groupByGenre?: boolean; openCleanup?: boolean; query?: string }
+    options?: {
+      genre?: string;
+      groupByGenre?: boolean;
+      openCleanup?: boolean;
+      openDuplicates?: boolean;
+      openIntegrity?: boolean;
+      query?: string;
+    }
   ) => void;
+  integrityResults?: Record<string, TrackIntegrityScanResult>;
   onOpenPlaylist: (playlistId: string) => void;
   onOpenCreatePlaylist: () => void;
   onCreatePlaylistFromTracks: (trackIds: string[]) => void;
@@ -78,6 +104,7 @@ interface DashboardViewProps {
   onInspectTrack: (trackId: string) => void;
   onUpdateAlbumCoverArt?: (trackIds: string[], coverArtUrl: string | null) => void;
   onOpenBatchTagEditor?: (trackIds: string[], contextLabel: string) => void;
+  onApplyTrackGenres?: (updates: Record<string, string>) => void;
 }
 
 export function DashboardView({
@@ -99,6 +126,7 @@ export function DashboardView({
   onDropTransfer,
   onRescanFolder,
   onOpenScanner,
+  integrityResults,
   onOpenPlaylist,
   onOpenCreatePlaylist,
   onCreatePlaylistFromTracks,
@@ -111,10 +139,19 @@ export function DashboardView({
   onInspectTrack,
   onUpdateAlbumCoverArt,
   onOpenBatchTagEditor,
+  onApplyTrackGenres,
 }: DashboardViewProps) {
   const [bannerFailed, setBannerFailed] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [selectedGenre, setSelectedGenre] = useState<string>('all');
+  const [jumpPaletteOpen, setJumpPaletteOpen] = useState(false);
+  const [activeSectionId, setActiveSectionId] = useState<DashboardSectionId>('overview');
+  const [highlightedSectionId, setHighlightedSectionId] = useState<DashboardSectionId | null>(null);
+  const [showStickyJump, setShowStickyJump] = useState(false);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const highlightTimerRef = useRef<number | null>(null);
+  const [csvExportedFeedback, setCsvExportedFeedback] = useState(false);
+  const csvTimerRef = useRef<number | null>(null);
 
   const allStats = useMemo(() => computeTrackStatistics(tracks), [tracks]);
 
@@ -126,8 +163,10 @@ export function DashboardView({
 
   const scopedTracks = useMemo(() => {
     if (activeGenre === 'all') return tracks;
-    return tracks.filter((t) => inferTrackGenre(t).genre === activeGenre);
-  }, [tracks, activeGenre]);
+    return tracks.filter(
+      (t) => (allStats.trackGenreMap.get(t.id) ?? inferTrackGenre(t)).genre === activeGenre
+    );
+  }, [tracks, activeGenre, allStats.trackGenreMap]);
 
   const scopedStats = useMemo(
     () => (activeGenre === 'all' ? allStats : computeTrackStatistics(scopedTracks)),
@@ -204,9 +243,368 @@ export function DashboardView({
 
   const isLibraryEmpty = tracks.length === 0 && playlists.length === 0;
 
+  const totalPlayCount = useMemo(() => {
+    let sum = 0;
+    for (const stat of Object.values(playStats)) {
+      sum += stat.playCount ?? 0;
+    }
+    return sum;
+  }, [playStats]);
+
+  const dashboardSections = useMemo<DashboardSectionItem[]>(() => {
+    const items: DashboardSectionItem[] = [
+      {
+        id: 'overview',
+        label: 'Library Overview',
+        description: 'Key library metrics, match coverage, and sync summary',
+        group: 'Analytics',
+        metric: `${metrics.totalTracks} tracks`,
+        keywords: ['kpi', 'metrics', 'summary', 'overview', 'stats', 'top'],
+        icon: 'overview',
+      },
+      ...(tracks.length > 0
+        ? [
+            {
+              id: 'smart-filter' as const,
+              label: 'Smart Filter',
+              description:
+                'Filter tracks inline by No Genre, Missing Year, 10m+ duration, or custom rules',
+              group: 'Library' as const,
+              metric: '8 presets',
+              keywords: [
+                'smart filter',
+                'filter',
+                'no genre',
+                'missing year',
+                '10 minutes',
+                'longer',
+                'custom rules',
+                'untagged',
+                'criteria',
+                'lossless',
+                'no cover',
+                'never played',
+              ],
+              icon: 'smart-filter' as const,
+            },
+          ]
+        : []),
+      {
+        id: 'genres',
+        label: 'Genre Distribution & Diversity',
+        description: 'Recharts genre pie chart, diversity index, and track statistics',
+        group: 'Analytics',
+        metric: `${allStats.uniqueGenres} ${allStats.uniqueGenres === 1 ? 'genre' : 'genres'}`,
+        keywords: ['genre', 'pie', 'chart', 'diversity', 'unclassified', 'statistics', 'bitrate'],
+        icon: 'genres',
+      },
+      {
+        id: 'global-genres',
+        label: 'Global Genre Distribution',
+        description: 'Library-wide Recharts bar chart comparing genre percentages across all tracks',
+        group: 'Analytics',
+        metric: `${tracks.length} tracks`,
+        keywords: ['global', 'genre', 'bar', 'chart', 'percentages', 'distribution', 'library'],
+        icon: 'global-genres',
+      },
+      {
+        id: 'daily-listening',
+        label: 'Daily Listening Time',
+        description: 'Total playback duration aggregated by day over the last 30 days',
+        group: 'Analytics',
+        metric: `${playHistory.length} ${playHistory.length === 1 ? 'session' : 'sessions'}`,
+        keywords: ['daily', 'listening', 'time', '30 days', 'bar', 'chart', 'streak', 'timeline'],
+        icon: 'daily-listening',
+      },
+      {
+        id: 'weekly-habits',
+        label: 'Weekly Listening Habits',
+        description: 'Hours played by weekday, 24-hour peak listening curve, and time-of-day heatmap',
+        group: 'Analytics',
+        metric: 'Mon–Sun · 24h',
+        keywords: ['weekly', 'habits', 'hours', 'peak', 'weekday', 'weekend', 'schedule'],
+        icon: 'weekly-habits',
+      },
+      {
+        id: 'listening-heatmap',
+        label: 'Listening Activity Heatmap',
+        description: 'Granular D3 7-day × 24-hour play pattern matrix with hourly drill-down',
+        group: 'Analytics',
+        metric: '7 × 24 D3',
+        keywords: ['heatmap', 'd3', 'activity', 'day', 'hour', 'granular', 'matrix', 'patterns'],
+        icon: 'listening-heatmap',
+      },
+      {
+        id: 'top-played',
+        label: 'Top Played & Play History',
+        description: 'Most frequently played songs and recent playback log',
+        group: 'Analytics',
+        metric: `${totalPlayCount} ${totalPlayCount === 1 ? 'play' : 'plays'}`,
+        keywords: ['top played', 'most played', 'popular', 'history', 'recent plays', 'activity'],
+        icon: 'top-played',
+      },
+      {
+        id: 'recommendations',
+        label: 'Recommended for You',
+        description: 'Genre-matched track suggestions to add to your playlists',
+        group: 'Library',
+        metric: activeGenre === 'all' ? 'All genres' : activeGenre,
+        keywords: ['recommended', 'suggestions', 'discover', 'for you'],
+        icon: 'recommendations',
+      },
+      {
+        id: 'albums',
+        label: 'Album Art Gallery',
+        description: 'Browse albums, inspect artwork, and play full records',
+        group: 'Library',
+        metric: `${scopedStats.uniqueAlbums} ${scopedStats.uniqueAlbums === 1 ? 'album' : 'albums'}`,
+        keywords: ['album', 'art', 'gallery', 'covers', 'artwork'],
+        icon: 'albums',
+      },
+      {
+        id: 'tracks-added-trend',
+        label: 'New Tracks Added',
+        description: 'Weekly trend of newly added library tracks over the last 3 months',
+        group: 'Analytics',
+        metric: 'Last 3 months',
+        keywords: ['new tracks', 'added', 'trend', 'line', 'chart', 'growth', '3 months', 'weekly'],
+        icon: 'tracks-added-trend',
+      },
+    ];
+
+    if (recentTracks.length > 0) {
+      items.push({
+        id: 'recently-added',
+        label: 'Recently Added',
+        description: 'Latest local audio files scanned from device storage',
+        group: 'Library',
+        metric: `${recentTracks.length} recent`,
+        keywords: ['recently added', 'new', 'latest', 'files', 'scanned'],
+        icon: 'recently-added',
+      });
+    }
+
+    items.push(
+      {
+        id: 'top-artists',
+        label: 'Top Artists',
+        description: 'Most represented artists on device by track count and runtime',
+        group: 'Library',
+        metric: `${metrics.topArtists.length} listed`,
+        keywords: ['artists', 'top artists', 'creators'],
+        icon: 'top-artists',
+      },
+      {
+        id: 'folders',
+        label: 'Folders & Formats',
+        description: 'Mounted local folder watch status, audio codecs, and match health',
+        group: 'Storage & Sync',
+        metric: watchedFolder ? watchedFolder.name : 'Not mounted',
+        keywords: ['folders', 'watched', 'directory', 'formats', 'flac', 'mp3', 'match', 'missing'],
+        icon: 'folders',
+      },
+      {
+        id: 'playlists',
+        label: 'Playlists & Sync Readiness',
+        description: 'YouTube Music match progress and pending folder deltas per playlist',
+        group: 'Storage & Sync',
+        metric: `${playlists.length} ${playlists.length === 1 ? 'playlist' : 'playlists'}`,
+        keywords: ['playlists', 'sync', 'youtube', 'readiness', 'deltas'],
+        icon: 'playlists',
+      },
+      {
+        id: 'sync-history',
+        label: 'Sync Checkpoints',
+        description: 'Timestamped history of applied playlist sync updates',
+        group: 'Storage & Sync',
+        metric: `${syncHistory.length} ${syncHistory.length === 1 ? 'checkpoint' : 'checkpoints'}`,
+        keywords: ['sync history', 'checkpoints', 'log', 'applied'],
+        icon: 'sync-history',
+      }
+    );
+
+    return items;
+  }, [
+    tracks.length,
+    metrics.totalTracks,
+    metrics.topArtists.length,
+    allStats.uniqueGenres,
+    playHistory.length,
+    totalPlayCount,
+    activeGenre,
+    scopedStats.uniqueAlbums,
+    recentTracks.length,
+    watchedFolder,
+    playlists.length,
+    syncHistory.length,
+  ]);
+
+  const activeSectionLabel = useMemo(
+    () => dashboardSections.find((s) => s.id === activeSectionId)?.label ?? 'Library Overview',
+    [dashboardSections, activeSectionId]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current !== null) {
+        window.clearTimeout(highlightTimerRef.current);
+      }
+      if (csvTimerRef.current !== null) {
+        window.clearTimeout(csvTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleExportLibraryCsv = useCallback(() => {
+    const libraryTracks = Array.from(trackMap.values());
+    if (libraryTracks.length === 0) return;
+
+    const escapeCsv = (value: string | number | null | undefined) => {
+      const str = value === null || value === undefined ? '' : String(value);
+      return `"${str.replace(/"/g, '""')}"`;
+    };
+
+    const headers = [
+      'Title',
+      'Artist',
+      'Album',
+      'Genre',
+      'Year',
+      'Format',
+      'Duration (s)',
+      'File Size (bytes)',
+      'Folder',
+      'Relative Path',
+      'Added At',
+      'Match Status',
+      'YouTube Video ID',
+    ];
+
+    const sorted = [...libraryTracks].sort((a, b) => {
+      const artistCmp = a.artist.localeCompare(b.artist);
+      if (artistCmp !== 0) return artistCmp;
+      const albumCmp = a.album.localeCompare(b.album);
+      if (albumCmp !== 0) return albumCmp;
+      return a.title.localeCompare(b.title);
+    });
+
+    const rows = sorted.map((track) => {
+      const resolvedGenre =
+        allStats.trackGenreMap.get(track.id)?.genre ?? inferTrackGenre(track).genre;
+      const addedIso =
+        Number.isFinite(track.addedAt) && track.addedAt > 0
+          ? new Date(track.addedAt).toISOString()
+          : '';
+      return [
+        escapeCsv(track.title),
+        escapeCsv(track.artist),
+        escapeCsv(track.album),
+        escapeCsv(resolvedGenre),
+        escapeCsv(track.year || ''),
+        escapeCsv(track.format),
+        Math.round(track.duration || 0),
+        track.fileSize || 0,
+        escapeCsv(track.folderName),
+        escapeCsv(track.relativePath),
+        escapeCsv(addedIso),
+        escapeCsv(track.matchStatus),
+        escapeCsv(track.youtubeVideoId ?? ''),
+      ].join(',');
+    });
+
+    const csvContent = `\uFEFF${[headers.join(','), ...rows].join('\n')}`;
+    const dateStamp = new Date().toISOString().slice(0, 10);
+    triggerFileDownload(
+      csvContent,
+      `cratesync-library-${dateStamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
+
+    setCsvExportedFeedback(true);
+    if (csvTimerRef.current !== null) {
+      window.clearTimeout(csvTimerRef.current);
+    }
+    csvTimerRef.current = window.setTimeout(() => {
+      setCsvExportedFeedback(false);
+    }, 2000);
+  }, [trackMap, allStats.trackGenreMap]);
+
+  const handleDashboardScroll = useCallback(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const scrollTop = container.scrollTop;
+    setShowStickyJump(scrollTop > 130);
+
+    const containerRect = container.getBoundingClientRect();
+    let closestId: DashboardSectionId = 'overview';
+    let bestScore = Infinity;
+
+    for (const section of dashboardSections) {
+      const el = container.querySelector<HTMLElement>(`#dash-section-${section.id}`);
+      if (!el) continue;
+      const offsetTop = el.getBoundingClientRect().top - containerRect.top;
+      // Prefer the last section that has scrolled past (or is near) the upper 110px threshold
+      if (offsetTop <= 120) {
+        const dist = Math.abs(offsetTop - 72);
+        if (dist <= bestScore || offsetTop > -el.offsetHeight * 0.6) {
+          closestId = section.id;
+          bestScore = dist;
+        }
+      }
+    }
+
+    setActiveSectionId((prev) => (prev === closestId ? prev : closestId));
+  }, [dashboardSections]);
+
+  const handleJumpToSection = useCallback((sectionId: DashboardSectionId) => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const target = container.querySelector<HTMLElement>(`#dash-section-${sectionId}`);
+    if (!target) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const clearance = 64;
+    const nextTop = Math.max(0, container.scrollTop + (targetRect.top - containerRect.top) - clearance);
+
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    container.scrollTo({
+      top: nextTop,
+      behavior: prefersReducedMotion ? 'auto' : 'smooth',
+    });
+
+    setActiveSectionId(sectionId);
+    setHighlightedSectionId(sectionId);
+    if (highlightTimerRef.current !== null) {
+      window.clearTimeout(highlightTimerRef.current);
+    }
+    highlightTimerRef.current = window.setTimeout(() => {
+      setHighlightedSectionId(null);
+    }, 1350);
+  }, []);
+
+  const handleScrollToTop = useCallback(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    container.scrollTo({
+      top: 0,
+      behavior: prefersReducedMotion ? 'auto' : 'smooth',
+    });
+    setActiveSectionId('overview');
+  }, []);
+
+  const sectionHighlightClass = (id: DashboardSectionId) =>
+    highlightedSectionId === id
+      ? 'ring-1 ring-[#FF1F3D]/70 rounded-lg transition-shadow duration-300'
+      : 'transition-shadow duration-300';
+
   return (
     <div
-      className="flex-1 overflow-y-auto px-5 py-6 sm:px-8"
+      ref={scrollContainerRef}
+      onScroll={handleDashboardScroll}
+      className="flex-1 overflow-y-auto px-5 py-6 sm:px-8 relative"
       onDragOver={(e) => {
         e.preventDefault();
         setIsDragging(true);
@@ -221,6 +619,39 @@ export function DashboardView({
         onDropTransfer(e.dataTransfer);
       }}
     >
+      {/* Compact Sticky Quick-Jump Bar (appears only after scrolling past page header) */}
+      {showStickyJump && (
+        <div className="sticky top-2 z-20 mb-3 flex justify-end pointer-events-none">
+          <div className="pointer-events-auto inline-flex items-center gap-1.5 rounded-md border border-white/[0.11] bg-[#111319]/92 backdrop-blur-md px-2.5 py-1.5 shadow-lg text-xs">
+            <button
+              type="button"
+              onClick={() => setJumpPaletteOpen(true)}
+              className="inline-flex items-center gap-2 text-[#E5E7EB] hover:text-white transition-colors whitespace-nowrap"
+              title="Open Jump to Section palette (J)"
+            >
+              <Compass className="h-3.5 w-3.5 text-[#FF4D64] shrink-0" />
+              <span className="max-w-[170px] sm:max-w-[220px] truncate font-medium">
+                {activeSectionLabel}
+              </span>
+              <ChevronDown className="h-3 w-3 text-[#717786] shrink-0" />
+              <span className="hidden sm:inline font-mono text-[10px] text-[#717786] border border-white/[0.09] rounded px-1 py-0.5 leading-none">
+                J
+              </span>
+            </button>
+            <span className="h-3.5 w-px bg-white/[0.09]" aria-hidden="true" />
+            <button
+              type="button"
+              onClick={handleScrollToTop}
+              aria-label="Back to top"
+              title="Back to top"
+              className="p-1 rounded text-[#8B92A2] hover:text-white hover:bg-white/[0.07] transition-colors"
+            >
+              <ArrowUp className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="max-w-6xl mx-auto space-y-8">
         {isDragging && (
           <div className="rounded-lg border border-dashed border-[#FF1F3D] bg-[#FF1F3D]/10 px-5 py-4 text-center text-sm font-medium text-white">
@@ -239,6 +670,60 @@ export function DashboardView({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <DashboardQuickActionsMenu
+              tracks={tracks}
+              trackGenreMap={allStats.trackGenreMap}
+              integrityResults={integrityResults}
+              watchedFolder={watchedFolder}
+              isScanning={isScanning}
+              playHistoryCount={playHistory.length}
+              totalPendingSyncs={metrics.totalPending}
+              onJumpToSection={handleJumpToSection}
+              onOpenScanner={onOpenScanner}
+              onOpenBatchTagEditor={onOpenBatchTagEditor}
+              onInspectTrack={onInspectTrack}
+              onMountFolder={onMountFolder}
+              onRescanFolder={onRescanFolder}
+              onOpenSyncQueue={onOpenSyncQueue}
+              onOpenTransfer={onOpenTransfer}
+            />
+            <button
+              type="button"
+              onClick={() => setJumpPaletteOpen(true)}
+              aria-haspopup="dialog"
+              aria-expanded={jumpPaletteOpen}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-md text-xs font-medium text-[#E5E7EB] bg-[#161920] border border-white/[0.09] hover:bg-[#1E222B] transition-colors whitespace-nowrap"
+              title="Jump directly to any dashboard section (Shortcut: J or Ctrl+J)"
+            >
+              <Compass className="h-3.5 w-3.5 text-[#FF4D64]" />
+              <span>Jump to Section</span>
+              <span className="font-mono text-[10px] text-[#717786] border border-white/[0.09] rounded px-1 py-0.5 leading-none">
+                J
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={handleExportLibraryCsv}
+              disabled={trackMap.size === 0}
+              title={
+                trackMap.size > 0
+                  ? `Export CSV metadata for all ${trackMap.size} library tracks`
+                  : 'Add tracks to export CSV'
+              }
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium text-[#E5E7EB] bg-[#161920] border border-white/[0.09] hover:bg-[#1E222B] disabled:opacity-40 disabled:pointer-events-none transition-colors whitespace-nowrap"
+            >
+              {csvExportedFeedback ? (
+                <>
+                  <Check className="h-3.5 w-3.5 text-[#22C55E]" />
+                  <span className="text-[#22C55E]">Exported CSV</span>
+                </>
+              ) : (
+                <>
+                  <Download className="h-3.5 w-3.5 text-[#9CA3AF]" />
+                  <span>Export CSV</span>
+                </>
+              )}
+            </button>
             {scopedTracks.length > 0 && (
               <button
                 type="button"
@@ -355,8 +840,9 @@ export function DashboardView({
 
         {/* 4-Column KPI Metric Strip (Single-level hairline divided grid, tabular-nums) */}
         <section
+          id="dash-section-overview"
           aria-label="Library summary metrics"
-          className="grid grid-cols-2 lg:grid-cols-4 gap-5 py-5 px-5 sm:px-6 rounded-lg bg-[#12141A] border border-white/[0.08]"
+          className={`grid grid-cols-2 lg:grid-cols-4 gap-5 py-5 px-5 sm:px-6 rounded-lg bg-[#12141A] border border-white/[0.08] ${sectionHighlightClass('overview')}`}
         >
           <div>
             <div className="text-xs text-[#717786]">
@@ -471,17 +957,44 @@ export function DashboardView({
           </section>
         )}
 
+        {/* Inline Dashboard Smart Filter */}
+        {tracks.length > 0 && (
+          <div
+            id="dash-section-smart-filter"
+            className={sectionHighlightClass('smart-filter')}
+          >
+            <DashboardSmartFilter
+              tracks={tracks}
+              trackGenreMap={allStats.trackGenreMap}
+              playStats={playStats}
+              activePlayingTrackId={activePlayingTrackId}
+              isAudioPlaying={isAudioPlaying}
+              onPlayTrack={onPlayTrack}
+              onPlayList={onPlayList}
+              onCreatePlaylistFromTracks={onCreatePlaylistFromTracks}
+              onInspectTrack={onInspectTrack}
+              onOpenBatchTagEditor={onOpenBatchTagEditor}
+            />
+          </div>
+        )}
+
         {/* Genre Distribution (Recharts Pie Chart) & Track Statistics 2-Column Section */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+        <div
+          id="dash-section-genres"
+          className={`grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch ${sectionHighlightClass('genres')}`}
+        >
           {/* Left (7 cols): Recharts Genre Distribution Pie Chart */}
           <GenreDistributionChart
             tracks={tracks}
             allStats={allStats}
+            playStats={playStats}
             activeGenre={activeGenre}
             onSelectGenre={setSelectedGenre}
             onOpenScanner={onOpenScanner}
             onPlayList={onPlayList}
             onCreatePlaylistFromTracks={onCreatePlaylistFromTracks}
+            onOpenBatchTagEditor={onOpenBatchTagEditor}
+            onApplyTrackGenres={onApplyTrackGenres}
             onMountFolder={onMountFolder}
             onPickFilesFallback={onPickFilesFallback}
           />
@@ -647,58 +1160,161 @@ export function DashboardView({
           </section>
         </div>
 
+        {/* Global Genre Distribution (Recharts Bar Chart of Library-Wide Percentages) */}
+        <div
+          id="dash-section-global-genres"
+          className={sectionHighlightClass('global-genres')}
+        >
+          <GlobalGenreDistributionChart
+            tracks={tracks}
+            allStats={allStats}
+            activeGenre={activeGenre}
+            onSelectGenre={setSelectedGenre}
+            onPlayList={onPlayList}
+            onCreatePlaylistFromTracks={onCreatePlaylistFromTracks}
+            onOpenScanner={onOpenScanner}
+            onMountFolder={onMountFolder}
+            onPickFilesFallback={onPickFilesFallback}
+          />
+        </div>
+
         {/* Recommended for You (Genre-Matched Playlist Suggestions) */}
-        <RecommendedForYou
-          tracks={tracks}
-          playlists={playlists}
-          trackMap={trackMap}
-          activeGenre={activeGenre}
-          activePlayingTrackId={activePlayingTrackId}
-          isAudioPlaying={isAudioPlaying}
-          onAddTracksToPlaylist={onAddTracksToPlaylist}
-          onCreatePlaylistFromTracks={onCreatePlaylistFromTracks}
-          onPlayTrack={onPlayTrack}
-          onInspectTrack={onInspectTrack}
-          onOpenPlaylist={onOpenPlaylist}
-          onMountFolder={onMountFolder}
-          onPickFilesFallback={onPickFilesFallback}
-        />
+        <div
+          id="dash-section-recommendations"
+          className={sectionHighlightClass('recommendations')}
+        >
+          <RecommendedForYou
+            tracks={tracks}
+            playlists={playlists}
+            trackMap={trackMap}
+            activeGenre={activeGenre}
+            activePlayingTrackId={activePlayingTrackId}
+            isAudioPlaying={isAudioPlaying}
+            onAddTracksToPlaylist={onAddTracksToPlaylist}
+            onCreatePlaylistFromTracks={onCreatePlaylistFromTracks}
+            onPlayTrack={onPlayTrack}
+            onInspectTrack={onInspectTrack}
+            onOpenPlaylist={onOpenPlaylist}
+            onMountFolder={onMountFolder}
+            onPickFilesFallback={onPickFilesFallback}
+          />
+        </div>
+
+        {/* Daily Listening Time Bar Chart (Last 30 Days) */}
+        <div
+          id="dash-section-daily-listening"
+          className={sectionHighlightClass('daily-listening')}
+        >
+          <DailyListeningChart
+            tracks={scopedTracks}
+            trackMap={trackMap}
+            activeGenre={activeGenre}
+            playHistory={playHistory}
+            activePlayingTrackId={activePlayingTrackId}
+            isAudioPlaying={isAudioPlaying}
+            onPlayTrack={onPlayTrack}
+            onPlayList={onPlayList}
+            onMountFolder={onMountFolder}
+          />
+        </div>
+
+        {/* Weekly Listening Habits (Weekday Hours, 24h Peak Times & Heatmap) */}
+        <div
+          id="dash-section-weekly-habits"
+          className={sectionHighlightClass('weekly-habits')}
+        >
+          <WeeklyListeningHabitsChart
+            tracks={scopedTracks}
+            trackMap={trackMap}
+            activeGenre={activeGenre}
+            playHistory={playHistory}
+            activePlayingTrackId={activePlayingTrackId}
+            isAudioPlaying={isAudioPlaying}
+            onPlayTrack={onPlayTrack}
+            onPlayList={onPlayList}
+            onMountFolder={onMountFolder}
+          />
+        </div>
+
+        {/* Granular Listening Activity Heatmap (D3 7-Day × 24-Hour Matrix) */}
+        <div
+          id="dash-section-listening-heatmap"
+          className={sectionHighlightClass('listening-heatmap')}
+        >
+          <ListeningActivityHeatmap
+            tracks={scopedTracks}
+            trackMap={trackMap}
+            activeGenre={activeGenre}
+            playHistory={playHistory}
+            activePlayingTrackId={activePlayingTrackId}
+            isAudioPlaying={isAudioPlaying}
+            onPlayTrack={onPlayTrack}
+            onPlayList={onPlayList}
+            onMountFolder={onMountFolder}
+          />
+        </div>
 
         {/* Most Played Songs & Recent Play History */}
-        <ListeningActivitySection
-          tracks={scopedTracks}
-          trackMap={trackMap}
-          activeGenre={activeGenre}
-          playStats={playStats}
-          playHistory={playHistory}
-          activePlayingTrackId={activePlayingTrackId}
-          isAudioPlaying={isAudioPlaying}
-          onPlayTrack={onPlayTrack}
-          onPlayList={onPlayList}
-          onCreatePlaylistFromTracks={onCreatePlaylistFromTracks}
-          onInspectTrack={onInspectTrack}
-          onClearPlayHistory={onClearPlayHistory}
-        />
+        <div id="dash-section-top-played" className={sectionHighlightClass('top-played')}>
+          <ListeningActivitySection
+            tracks={scopedTracks}
+            trackMap={trackMap}
+            activeGenre={activeGenre}
+            playStats={playStats}
+            playHistory={playHistory}
+            activePlayingTrackId={activePlayingTrackId}
+            isAudioPlaying={isAudioPlaying}
+            onPlayTrack={onPlayTrack}
+            onPlayList={onPlayList}
+            onCreatePlaylistFromTracks={onCreatePlaylistFromTracks}
+            onInspectTrack={onInspectTrack}
+            onClearPlayHistory={onClearPlayHistory}
+          />
+        </div>
 
         {/* Album Art Gallery */}
-        <AlbumArtGallery
-          tracks={scopedTracks}
-          activeGenre={activeGenre}
-          activePlayingTrackId={activePlayingTrackId}
-          isAudioPlaying={isAudioPlaying}
-          onPlayTrack={onPlayTrack}
-          onPlayList={onPlayList}
-          onCreatePlaylistFromTracks={onCreatePlaylistFromTracks}
-          onInspectTrack={onInspectTrack}
-          onUpdateAlbumCoverArt={onUpdateAlbumCoverArt}
-          onOpenBatchTagEditor={onOpenBatchTagEditor}
-          onMountFolder={onMountFolder}
-          onPickFilesFallback={onPickFilesFallback}
-        />
+        <div id="dash-section-albums" className={sectionHighlightClass('albums')}>
+          <AlbumArtGallery
+            tracks={scopedTracks}
+            activeGenre={activeGenre}
+            activePlayingTrackId={activePlayingTrackId}
+            isAudioPlaying={isAudioPlaying}
+            onPlayTrack={onPlayTrack}
+            onPlayList={onPlayList}
+            onCreatePlaylistFromTracks={onCreatePlaylistFromTracks}
+            onInspectTrack={onInspectTrack}
+            onUpdateAlbumCoverArt={onUpdateAlbumCoverArt}
+            onOpenBatchTagEditor={onOpenBatchTagEditor}
+            onMountFolder={onMountFolder}
+            onPickFilesFallback={onPickFilesFallback}
+          />
+        </div>
+
+        {/* New Tracks Added Weekly Trend (Recharts Line Chart — Last 3 Months) */}
+        <div
+          id="dash-section-tracks-added-trend"
+          className={sectionHighlightClass('tracks-added-trend')}
+        >
+          <WeeklyTracksAddedChart
+            tracks={scopedTracks}
+            trackGenreMap={allStats.trackGenreMap}
+            activeGenre={activeGenre}
+            activePlayingTrackId={activePlayingTrackId}
+            isAudioPlaying={isAudioPlaying}
+            onPlayTrack={onPlayTrack}
+            onPlayList={onPlayList}
+            onCreatePlaylistFromTracks={onCreatePlaylistFromTracks}
+            onMountFolder={onMountFolder}
+            onPickFilesFallback={onPickFilesFallback}
+          />
+        </div>
 
         {/* Recently Added Local Files (visible immediately once any files are uploaded/scanned) */}
         {recentTracks.length > 0 && (
-          <section className="rounded-lg border border-white/[0.08] bg-[#12141A] overflow-hidden">
+          <section
+            id="dash-section-recently-added"
+            className={`rounded-lg border border-white/[0.08] bg-[#12141A] overflow-hidden ${sectionHighlightClass('recently-added')}`}
+          >
             <div className="px-5 py-3.5 border-b border-white/[0.07] flex items-center justify-between gap-3">
               <div>
                 <h2 className="font-display text-base font-semibold text-white">
@@ -764,7 +1380,8 @@ export function DashboardView({
                       <div className="min-w-0">
                         <div className="font-medium text-white truncate">{track.title}</div>
                         <div className="text-[11px] text-[#8B92A2] truncate">
-                          {track.artist} · {track.album} · {inferTrackGenre(track).genre}
+                          {track.artist} · {track.album} ·{' '}
+                          {(allStats.trackGenreMap.get(track.id) ?? inferTrackGenre(track)).genre}
                         </div>
                       </div>
                     </div>
@@ -815,7 +1432,10 @@ export function DashboardView({
         {/* Primary 2-Column Overview Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
           {/* Left (7 cols): Playlist Sync Health Table */}
-          <section className="lg:col-span-7 rounded-lg border border-white/[0.08] bg-[#12141A] flex flex-col overflow-hidden">
+          <section
+            id="dash-section-playlists"
+            className={`lg:col-span-7 rounded-lg border border-white/[0.08] bg-[#12141A] flex flex-col overflow-hidden ${sectionHighlightClass('playlists')}`}
+          >
             <div className="px-5 py-4 border-b border-white/[0.07] flex items-center justify-between gap-3">
               <div>
                 <h2 className="font-display text-base font-semibold text-white">
@@ -951,7 +1571,10 @@ export function DashboardView({
           </section>
 
           {/* Right (5 cols): Match Breakdown, Audio Formats & Watched Folder */}
-          <section className="lg:col-span-5 rounded-lg border border-white/[0.08] bg-[#12141A] p-5 flex flex-col justify-between gap-6">
+          <section
+            id="dash-section-folders"
+            className={`lg:col-span-5 rounded-lg border border-white/[0.08] bg-[#12141A] p-5 flex flex-col justify-between gap-6 ${sectionHighlightClass('folders')}`}
+          >
             {/* Match Distribution */}
             <div className="space-y-3.5">
               <div className="flex items-center justify-between">
@@ -1099,7 +1722,10 @@ export function DashboardView({
         {/* Bottom 2-Column Row: Top Local Artists + Recent Sync History */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
           {/* Left (6 cols): Top Artists in Device Storage */}
-          <section className="lg:col-span-6 rounded-lg border border-white/[0.08] bg-[#12141A] overflow-hidden flex flex-col">
+          <section
+            id="dash-section-top-artists"
+            className={`lg:col-span-6 rounded-lg border border-white/[0.08] bg-[#12141A] overflow-hidden flex flex-col ${sectionHighlightClass('top-artists')}`}
+          >
             <div className="px-5 py-4 border-b border-white/[0.07] flex items-center justify-between">
               <h2 className="font-display text-base font-semibold text-white">
                 Top Artists on Device
@@ -1149,7 +1775,10 @@ export function DashboardView({
           </section>
 
           {/* Right (6 cols): Recent Sync Activity */}
-          <section className="lg:col-span-6 rounded-lg border border-white/[0.08] bg-[#12141A] overflow-hidden flex flex-col">
+          <section
+            id="dash-section-sync-history"
+            className={`lg:col-span-6 rounded-lg border border-white/[0.08] bg-[#12141A] overflow-hidden flex flex-col ${sectionHighlightClass('sync-history')}`}
+          >
             <div className="px-5 py-4 border-b border-white/[0.07] flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <History className="h-4 w-4 text-[#717786]" />
@@ -1204,6 +1833,16 @@ export function DashboardView({
           </section>
         </div>
       </div>
+
+      {/* Searchable Jump to Section Command Palette */}
+      <DashboardJumpMenu
+        sections={dashboardSections}
+        activeSectionId={activeSectionId}
+        isOpen={jumpPaletteOpen}
+        onOpenChange={setJumpPaletteOpen}
+        onJumpToSection={handleJumpToSection}
+        onScrollToTop={handleScrollToTop}
+      />
     </div>
   );
 }

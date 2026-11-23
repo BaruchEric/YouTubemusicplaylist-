@@ -27,6 +27,14 @@ export interface LocalTrack {
   playCount?: number;
   skipCount?: number;
   lastPlayedAt?: number | null;
+  /** Canonical Google Drive file ID when synced with Drive as source of truth */
+  driveFileId?: string | null;
+  /** ISO modifiedTime of the canonical audio file in Google Drive */
+  driveModifiedTime?: string | null;
+  /** Folder / source label in Google Drive */
+  drivePath?: string | null;
+  /** Timestamp when this song's audio binary was cached locally on this playing device */
+  cachedOnDeviceAt?: number | null;
 }
 
 export type PlayEventOutcome = 'completed' | 'skipped';
@@ -171,4 +179,32 @@ export interface WatchedFolderInfo {
   lastScannedAt: number | null;
   trackCount: number;
   hasLiveHandle: boolean;
+}
+
+export type FolderSyncDirection = 'pull' | 'push' | 'bidirectional';
+
+export interface SyncDeviceProfile {
+  id: string;
+  name: string;
+  platform: string;
+  lastSeenAt: number;
+}
+
+export interface DeviceFolderBinding {
+  deviceId: string;
+  /** Local folder name/path on this device (empty string = IndexedDB offline audio cache only) */
+  localFolderPath: string;
+  syncDirection: FolderSyncDirection;
+  autoCacheOffline: boolean;
+  lastSyncedAt: number | null;
+}
+
+export interface DriveFolderMapping {
+  id: string;
+  driveFolderId: string;
+  driveFolderName: string;
+  createdAt: number;
+  updatedAt: number;
+  /** Per-device local folder bindings keyed by SyncDeviceProfile.id */
+  deviceBindings: Record<string, DeviceFolderBinding>;
 }

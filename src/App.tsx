@@ -21,20 +21,30 @@ import { TransferView } from './components/TransferView';
 import { useAudioPlayer } from './hooks/useAudioPlayer';
 import { useToasts, type ToastStat } from './hooks/useToasts';
 import type {
+  DeviceFolderBinding,
+  DriveFolderMapping,
   LocalTrack,
   Playlist,
   PlaylistDiff,
   SmartPlaylist,
+  SyncDeviceProfile,
   SyncEvent,
   SyncRule,
   WatchedFolderInfo,
   WorkspaceView,
 } from './types/music';
+import type { TrackIntegrityRepairPatch } from './components/AudioIntegrityPanel';
 import { evaluateSmartPlaylist } from './utils/smartPlaylists';
+import {
+  inspectAudioBlobIntegrity,
+  summarizeIntegrityIssues,
+  type TrackIntegrityScanResult,
+} from './utils/audioIntegrity';
 import { computeAudioHash, extractLocalTrack, isAudioFile } from './utils/audioMetadata';
 import {
+  clearAllAudioBlobs,
   deleteAudioBlobs,
-  listStoredAudioKeys,
+  getAudioCacheStats,
   loadAudioBlob,
   loadDirectoryHandle,
   loadLibraryState,
@@ -49,6 +59,19 @@ import {
   walkDirectoryHandle,
   type ScannedFileEntry,
 } from './utils/syncEngine';
+import {
+  buildTrackStubFromDriveAudio,
+  type CrateSyncLibraryBackupPayload,
+  type DriveFileItem,
+} from './utils/googleDriveApi';
+import {
+  getOrCreateCurrentDeviceProfile,
+  mergeDeviceProfiles,
+  mergeFolderMappings,
+  resolveLocalBindingForDriveFolder,
+  saveCurrentDeviceProfile,
+  translateRelativePathForDevice,
+} from './utils/folderMappings';
 import type { ImportedTrackSeed } from './utils/youtubeLinks';
 
 type PendingConfirm =
@@ -66,6 +89,21 @@ export default function App() {
   const [syncHistory, setSyncHistory] = useState<SyncEvent[]>([]);
   const [watchedFolderName, setWatchedFolderName] = useState<string | null>(null);
   const [lastScannedAt, setLastScannedAt] = useState<number | null>(null);
+  const [currentDevice, setCurrentDevice] = useState<SyncDeviceProfile>(() =>
+    getOrCreateCurrentDeviceProfile()
+  );
+  const [devices, setDevices] = useState<SyncDeviceProfile[]>(() => [
+    getOrCreateCurrentDeviceProfile(),
+  ]);
+  const [folderMappings, setFolderMappings] = useState<DriveFolderMapping[]>([]);
+  const folderMappingsRef = useRef<DriveFolderMapping[]>(folderMappings);
+  useEffect(() => {
+    folderMappingsRef.current = folderMappings;
+  }, [folderMappings]);
+  const currentDeviceRef = useRef<SyncDeviceProfile>(currentDevice);
+  useEffect(() => {
+    currentDeviceRef.current = currentDevice;
+  }, [currentDevice]);
   const { toasts, pushToast, dismissToast } = useToasts({ maxVisible: 3 });
 
   const [activeView, setActiveView] = useState<WorkspaceView>('dashboard');
@@ -82,6 +120,8 @@ export default function App() {
   const [scannerGroupByGenrePreset, setScannerGroupByGenrePreset] = useState<boolean>(false);
   const [scannerSearchPreset, setScannerSearchPreset] = useState<string>('');
   const [scannerOpenCleanupPreset, setScannerOpenCleanupPreset] = useState<boolean>(false);
+  const [scannerOpenDuplicatesPreset, setScannerOpenDuplicatesPreset] = useState<boolean>(false);
+  const [scannerOpenIntegrityPreset, setScannerOpenIntegrityPreset] = useState<boolean>(false);
   const [smartSearchOpen, setSmartSearchOpen] = useState<boolean>(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -95,6 +135,14 @@ export default function App() {
   const [hashProgress, setHashProgress] = useState<{ processed: number; total: number } | null>(
     null
   );
+  const [integrityResults, setIntegrityResults] = useState<
+    Record<string, TrackIntegrityScanResult>
+  >({});
+  const [isScanningIntegrity, setIsScanningIntegrity] = useState(false);
+  const [integrityProgress, setIntegrityProgress] = useState<{
+    processed: number;
+    total: number;
+  } | null>(null);
 
   const [inspectedTrackId, setInspectedTrackId] = useState<string | null>(null);
   const [createModalState, setCreateModalState] = useState<{
@@ -111,6 +159,7 @@ export default function App() {
   // Live in-memory references (audio Blobs for playback + FileSystemDirectoryHandle for auto-watch)
   const fileMapRef = useRef<Map<string, Blob>>(new Map());
   const [storedAudioKeys, setStoredAudioKeys] = useState<Set<string>>(new Set());
+  const [deviceCacheBytes, setDeviceCacheBytes] = useState<number>(0);
   const storedAudioKeysRef = useRef<Set<string>>(storedAudioKeys);
   useEffect(() => {
     storedAudioKeysRef.current = storedAudioKeys;
@@ -147,18 +196,86 @@ export default function App() {
     []
   );
 
+  const refreshDeviceCacheStats = useCallback(async () => {
+    const stats = await getAudioCacheStats();
+    setStoredAudioKeys(stats.cachedKeys);
+    setDeviceCacheBytes(stats.totalBytes);
+  }, []);
+
+  const handleCacheDriveTrackAudio = useCallback(
+    async (trackId: string, blob: Blob, driveFile?: DriveFileItem) => {
+      const target = tracksRef.current.find((t) => t.id === trackId);
+      if (!target) return;
+
+      fileMapRef.current.set(target.fileKey, blob);
+      await saveAudioBlob(target.fileKey, blob);
+      const cachedAt = Date.now();
+
+      // If this Drive song was synced as a lightweight catalog stub, parse real embedded ID3/FLAC/MP4 tags & duration now
+      let enriched: Partial<LocalTrack> = {
+        fileSize: blob.size || target.fileSize,
+        cachedOnDeviceAt: cachedAt,
+        isMissingOnDevice: false,
+        ...(driveFile
+          ? {
+              driveFileId: driveFile.id,
+              driveModifiedTime: driveFile.modifiedTime,
+            }
+          : {}),
+      };
+
+      if (target.duration === 0 || target.artist === 'Unknown Artist' || !target.coverArtUrl) {
+        try {
+          const virtualFile = new File([blob], target.fileName, {
+            type: blob.type || 'audio/mpeg',
+          });
+          const parsed = await extractLocalTrack(virtualFile, target.relativePath);
+          enriched = {
+            ...enriched,
+            title:
+              target.title && target.title !== target.fileName.replace(/\.[^.]+$/, '')
+                ? target.title
+                : parsed.title,
+            artist: target.artist !== 'Unknown Artist' ? target.artist : parsed.artist,
+            album:
+              target.album !== 'Unknown Album' && target.album !== 'Google Drive Library'
+                ? target.album
+                : parsed.album,
+            genre: target.genre || parsed.genre,
+            year: target.year || parsed.year,
+            trackNumber: target.trackNumber ?? parsed.trackNumber,
+            duration: parsed.duration > 0 ? parsed.duration : target.duration,
+            coverArtUrl: target.coverArtUrl || parsed.coverArtUrl,
+            contentHash: target.contentHash || parsed.contentHash,
+          };
+        } catch {
+          // Keep existing Drive stub metadata if binary tag parsing fails
+        }
+      }
+
+      setTracks((prev) =>
+        prev.map((t) => (t.id === trackId ? { ...t, ...enriched } : t))
+      );
+      await refreshDeviceCacheStats();
+    },
+    [refreshDeviceCacheStats]
+  );
+
   const audioPlayer = useAudioPlayer(tracks, fileMapRef, {
     onPlayRecorded: handlePlayRecorded,
+    onTrackCachedFromDrive: ({ trackId, blob }) => {
+      void handleCacheDriveTrackAudio(trackId, blob);
+    },
   });
 
-  // Hydrate library state, stored audio keys & directory handle from IndexedDB
+  // Hydrate library state, stored audio cache stats & directory handle from IndexedDB
   useEffect(() => {
     let active = true;
     (async () => {
-      const [savedState, savedHandle, blobKeys] = await Promise.all([
+      const [savedState, savedHandle, cacheStats] = await Promise.all([
         loadLibraryState(),
         loadDirectoryHandle(),
-        listStoredAudioKeys(),
+        getAudioCacheStats(),
       ]);
       if (!active) return;
       setTracks(savedState.tracks);
@@ -173,7 +290,10 @@ export default function App() {
       setSyncHistory(savedState.syncHistory);
       setWatchedFolderName(savedState.watchedFolderName);
       setLastScannedAt(savedState.lastScannedAt);
-      setStoredAudioKeys(blobKeys);
+      setDevices(mergeDeviceProfiles(savedState.devices ?? [], [], currentDeviceRef.current));
+      setFolderMappings(savedState.folderMappings ?? []);
+      setStoredAudioKeys(cacheStats.cachedKeys);
+      setDeviceCacheBytes(cacheStats.totalBytes);
       if (savedHandle) {
         dirHandleRef.current = savedHandle;
         setHasLiveHandle(true);
@@ -207,8 +327,20 @@ export default function App() {
       syncHistory,
       watchedFolderName,
       lastScannedAt,
+      devices,
+      folderMappings,
     });
-  }, [hydrated, tracks, playlists, smartPlaylists, syncHistory, watchedFolderName, lastScannedAt]);
+  }, [
+    hydrated,
+    tracks,
+    playlists,
+    smartPlaylists,
+    syncHistory,
+    watchedFolderName,
+    lastScannedAt,
+    devices,
+    folderMappings,
+  ]);
 
   const trackMap = useMemo(() => {
     const map = new Map<string, LocalTrack>();
@@ -462,11 +594,7 @@ export default function App() {
         });
 
         if (newlyCachedKeys.length > 0) {
-          setStoredAudioKeys((prev) => {
-            const next = new Set(prev);
-            for (const k of newlyCachedKeys) next.add(k);
-            return next;
-          });
+          void refreshDeviceCacheStats();
         }
 
         if (options.folderRootName) {
@@ -766,6 +894,101 @@ export default function App() {
     }
   }, [isHashingDuplicates]);
 
+  // Deep Audio Integrity scan: validates raw binary container headers & probes real playable duration
+  const handleRunIntegrityScan = useCallback(async () => {
+    if (isScanningIntegrity) return;
+    const targets = tracksRef.current;
+    if (targets.length === 0) return;
+
+    setIsScanningIntegrity(true);
+    setIntegrityProgress({ processed: 0, total: targets.length });
+
+    try {
+      const nextResults: Record<string, TrackIntegrityScanResult> = {};
+      let verifiedBlobCount = 0;
+
+      for (let i = 0; i < targets.length; i++) {
+        const track = targets[i];
+        let blob = fileMapRef.current.get(track.fileKey) ?? null;
+        if (!blob) {
+          blob = await loadAudioBlob(track.fileKey);
+          if (blob) {
+            fileMapRef.current.set(track.fileKey, blob);
+          }
+        }
+        if (blob) verifiedBlobCount += 1;
+
+        const result = await inspectAudioBlobIntegrity(track, blob);
+        nextResults[track.id] = result;
+
+        if ((i + 1) % 3 === 0 || i === targets.length - 1) {
+          setIntegrityProgress({ processed: i + 1, total: targets.length });
+        }
+      }
+
+      setIntegrityResults(nextResults);
+      const summary = summarizeIntegrityIssues(targets, nextResults);
+      if (summary.totalFlagged === 0) {
+        setScanNotice(
+          `Audio Integrity scan passed: all ${targets.length} track${targets.length === 1 ? '' : 's'} healthy (${verifiedBlobCount} binary header${verifiedBlobCount === 1 ? '' : 's'} verified).`
+        );
+      } else {
+        setScanNotice(
+          `Audio Integrity found ${summary.totalFlagged} track${summary.totalFlagged === 1 ? '' : 's'} needing attention (${summary.headerIssueCount} header · ${summary.durationIssueCount} duration).`
+        );
+      }
+    } finally {
+      setIsScanningIntegrity(false);
+      setIntegrityProgress(null);
+    }
+  }, [isScanningIntegrity]);
+
+  // Apply one-click or manual Audio Integrity metadata fixes (duration & detected container format)
+  const handleRepairTrackMetadata = useCallback(
+    (patches: Record<string, TrackIntegrityRepairPatch>) => {
+      const ids = Object.keys(patches);
+      if (ids.length === 0) return;
+
+      setTracks((prev) =>
+        prev.map((track) => {
+          const patch = patches[track.id];
+          if (!patch) return track;
+          return {
+            ...track,
+            duration: patch.duration !== undefined ? patch.duration : track.duration,
+            format: patch.format !== undefined ? patch.format : track.format,
+          };
+        })
+      );
+
+      setIntegrityResults((prev) => {
+        const next = { ...prev };
+        for (const id of ids) {
+          const existing = next[id];
+          const patch = patches[id];
+          if (!existing || !patch) continue;
+          next[id] = {
+            ...existing,
+            suggestedFormat: patch.format ? null : existing.suggestedFormat,
+            issues: existing.issues.filter((issue) => {
+              if (patch.duration !== undefined && issue.code === 'duration-mismatch') return false;
+              if (patch.format !== undefined && issue.code === 'container-mismatch') return false;
+              return true;
+            }),
+          };
+        }
+        return next;
+      });
+
+      pushToast({
+        title: 'Audio metadata repaired',
+        description: `Updated ${ids.length} track${ids.length === 1 ? '' : 's'} from integrity diagnostics.`,
+        tone: 'success',
+      });
+    },
+    [pushToast]
+  );
+
   // Playlist & Track Mutations
   const handleCreatePlaylist = (payload: {
     name: string;
@@ -952,6 +1175,27 @@ export default function App() {
         : `Removed cover art for ${trackIds.length} track${trackIds.length === 1 ? '' : 's'}.`
     );
   };
+
+  const handleApplyTrackGenres = useCallback(
+    (updates: Record<string, string>) => {
+      const entries = Object.entries(updates);
+      if (entries.length === 0) return;
+      const updateMap = new Map(entries);
+      setTracks((prev) =>
+        prev.map((t) => {
+          const nextGenre = updateMap.get(t.id);
+          return nextGenre ? { ...t, genre: nextGenre } : t;
+        })
+      );
+      const uniqueGenres = new Set(entries.map(([, g]) => g)).size;
+      pushToast({
+        title: 'Genre analysis complete',
+        description: `Classified ${entries.length} track${entries.length === 1 ? '' : 's'} across ${uniqueGenres} genre${uniqueGenres === 1 ? '' : 's'}.`,
+        tone: 'success',
+      });
+    },
+    [pushToast]
+  );
 
   /**
    * Single-click Library Cleanup removal of missing on-device tracks from the database,
@@ -1218,6 +1462,679 @@ export default function App() {
     setActiveView('playlist');
   };
 
+  const handleRestoreLibraryBackup = useCallback(
+    (backup: CrateSyncLibraryBackupPayload, mode: 'merge' | 'replace') => {
+      const now = Date.now();
+
+      if (mode === 'replace') {
+        setTracks(backup.tracks);
+        setPlaylists(backup.playlists);
+        setSmartPlaylists(backup.smartPlaylists);
+        setSyncHistory(backup.syncHistory);
+        if (backup.watchedFolderName) {
+          setWatchedFolderName(backup.watchedFolderName);
+        }
+        pushToast({
+          title: 'Library restored from Google Drive',
+          description: `${backup.tracks.length} tracks · ${backup.playlists.length} playlists`,
+          tone: 'success',
+        });
+        return;
+      }
+
+      const existingTracks = tracksRef.current;
+      const byId = new Map<string, LocalTrack>();
+      const byFileKey = new Map<string, LocalTrack>();
+      const byArtistTitle = new Map<string, LocalTrack>();
+
+      for (const t of existingTracks) {
+        byId.set(t.id, t);
+        byFileKey.set(t.fileKey.toLowerCase(), t);
+        byArtistTitle.set(`${t.artist.toLowerCase()}::${t.title.toLowerCase()}`, t);
+      }
+
+      const idRemap = new Map<string, string>();
+      const enrichedExisting = new Map<string, LocalTrack>();
+      const tracksToAdd: LocalTrack[] = [];
+
+      for (const incoming of backup.tracks) {
+        const matched =
+          byId.get(incoming.id) ??
+          byFileKey.get(incoming.fileKey.toLowerCase()) ??
+          byArtistTitle.get(`${incoming.artist.toLowerCase()}::${incoming.title.toLowerCase()}`);
+
+        if (matched) {
+          idRemap.set(incoming.id, matched.id);
+          const mergedTrack: LocalTrack = {
+            ...matched,
+            genre: matched.genre || incoming.genre,
+            year: matched.year || incoming.year,
+            youtubeVideoId: matched.youtubeVideoId || incoming.youtubeVideoId,
+            youtubeTitle: matched.youtubeTitle || incoming.youtubeTitle,
+            matchStatus:
+              matched.youtubeVideoId || incoming.youtubeVideoId
+                ? 'matched'
+                : matched.matchStatus,
+            playCount: Math.max(matched.playCount ?? 0, incoming.playCount ?? 0) || undefined,
+            skipCount: Math.max(matched.skipCount ?? 0, incoming.skipCount ?? 0) || undefined,
+            lastPlayedAt:
+              Math.max(matched.lastPlayedAt ?? 0, incoming.lastPlayedAt ?? 0) || null,
+          };
+          enrichedExisting.set(matched.id, mergedTrack);
+        } else {
+          idRemap.set(incoming.id, incoming.id);
+          tracksToAdd.push({
+            ...incoming,
+            addedAt: incoming.addedAt || now,
+            lastSeenAt: incoming.lastSeenAt || now,
+          });
+        }
+      }
+
+      setTracks((prev) => [
+        ...tracksToAdd,
+        ...prev.map((t) => enrichedExisting.get(t.id) ?? t),
+      ]);
+
+      const remapTrackIds = (ids: string[]): string[] => {
+        const seen = new Set<string>();
+        const out: string[] = [];
+        for (const id of ids) {
+          const mapped = idRemap.get(id) ?? id;
+          if (!seen.has(mapped)) {
+            seen.add(mapped);
+            out.push(mapped);
+          }
+        }
+        return out;
+      };
+
+      let addedPlaylists = 0;
+      setPlaylists((prev) => {
+        const existingById = new Map(prev.map((p) => [p.id, p]));
+        const next = [...prev];
+        for (const incomingPl of backup.playlists) {
+          const remappedTrackIds = remapTrackIds(incomingPl.trackIds);
+          const remappedSyncedIds = remapTrackIds(incomingPl.syncedTrackIds ?? []);
+          const existing = existingById.get(incomingPl.id);
+          if (existing) {
+            const mergedTrackIds = Array.from(
+              new Set([...existing.trackIds, ...remappedTrackIds])
+            );
+            const idx = next.findIndex((p) => p.id === existing.id);
+            if (idx !== -1) {
+              next[idx] = {
+                ...existing,
+                trackIds: mergedTrackIds,
+                youtubePlaylistUrl: existing.youtubePlaylistUrl || incomingPl.youtubePlaylistUrl,
+                updatedAt: now,
+              };
+            }
+          } else {
+            addedPlaylists += 1;
+            next.unshift({
+              ...incomingPl,
+              trackIds: remappedTrackIds,
+              syncedTrackIds: remappedSyncedIds,
+              updatedAt: now,
+            });
+          }
+        }
+        return next;
+      });
+
+      if (backup.smartPlaylists.length > 0) {
+        setSmartPlaylists((prev) => {
+          const existingIds = new Set(prev.map((sp) => sp.id));
+          const existingNames = new Set(prev.map((sp) => sp.name.toLowerCase()));
+          const additions = backup.smartPlaylists.filter(
+            (sp) => !existingIds.has(sp.id) && !existingNames.has(sp.name.toLowerCase())
+          );
+          return additions.length > 0 ? [...additions, ...prev] : prev;
+        });
+      }
+
+      if (backup.syncHistory.length > 0) {
+        setSyncHistory((prev) => {
+          const byEventId = new Map(prev.map((ev) => [ev.id, ev]));
+          for (const ev of backup.syncHistory) {
+            if (!byEventId.has(ev.id)) {
+              byEventId.set(ev.id, ev);
+            }
+          }
+          return Array.from(byEventId.values())
+            .sort((a, b) => b.timestamp - a.timestamp)
+            .slice(0, 50);
+        });
+      }
+
+      if (backup.devices && backup.devices.length > 0) {
+        setDevices((prev) => mergeDeviceProfiles(prev, backup.devices ?? [], currentDeviceRef.current));
+      }
+      if (backup.folderMappings && backup.folderMappings.length > 0) {
+        setFolderMappings((prev) => mergeFolderMappings(prev, backup.folderMappings ?? [], true));
+      }
+
+      pushToast({
+        title: 'Google Drive backup restored',
+        description: `Merged ${tracksToAdd.length} new track${tracksToAdd.length === 1 ? '' : 's'} & ${addedPlaylists} playlist${addedPlaylists === 1 ? '' : 's'} (enriched ${enrichedExisting.size} existing).`,
+        tone: 'success',
+        durationMs: 5000,
+      });
+    },
+    [pushToast]
+  );
+
+  const handleRenameCurrentDevice = useCallback(
+    (newName: string) => {
+      const updated = saveCurrentDeviceProfile({
+        ...currentDeviceRef.current,
+        name: newName,
+      });
+      setCurrentDevice(updated);
+      setDevices((prev) => mergeDeviceProfiles(prev, [], updated));
+      pushToast({
+        title: 'Playing device renamed',
+        description: updated.name,
+        tone: 'success',
+      });
+    },
+    [pushToast]
+  );
+
+  const handleSaveFolderMapping = useCallback(
+    (params: {
+      driveFolderId: string;
+      driveFolderName: string;
+      binding: DeviceFolderBinding;
+    }) => {
+      const now = Date.now();
+      setFolderMappings((prev) => {
+        const existingIdx = prev.findIndex((m) => m.driveFolderId === params.driveFolderId);
+        if (existingIdx !== -1) {
+          const existing = prev[existingIdx];
+          const updated: DriveFolderMapping = {
+            ...existing,
+            driveFolderName: params.driveFolderName || existing.driveFolderName,
+            updatedAt: now,
+            deviceBindings: {
+              ...existing.deviceBindings,
+              [params.binding.deviceId]: params.binding,
+            },
+          };
+          const next = [...prev];
+          next[existingIdx] = updated;
+          return next;
+        }
+
+        const created: DriveFolderMapping = {
+          id: crypto.randomUUID(),
+          driveFolderId: params.driveFolderId,
+          driveFolderName: params.driveFolderName,
+          createdAt: now,
+          updatedAt: now,
+          deviceBindings: {
+            [params.binding.deviceId]: params.binding,
+          },
+        };
+        return [created, ...prev];
+      });
+      pushToast({
+        title: 'Folder mapping saved',
+        description: `Drive "${params.driveFolderName}" ↔ ${params.binding.localFolderPath || 'IndexedDB Offline Cache'}`,
+        tone: 'success',
+      });
+    },
+    [pushToast]
+  );
+
+  const handleUnbindDeviceFromMapping = useCallback(
+    (mappingId: string, deviceId: string) => {
+      setFolderMappings((prev) =>
+        prev
+          .map((m) => {
+            if (m.id !== mappingId) return m;
+            const nextBindings = { ...m.deviceBindings };
+            delete nextBindings[deviceId];
+            return {
+              ...m,
+              updatedAt: Date.now(),
+              deviceBindings: nextBindings,
+            };
+          })
+          .filter((m) => Object.keys(m.deviceBindings).length > 0)
+      );
+      pushToast({
+        title: 'Device unbound from folder mapping',
+        description: 'Other synced devices keep their own folder bindings.',
+        tone: 'neutral',
+      });
+    },
+    [pushToast]
+  );
+
+  const handleDeleteFolderMapping = useCallback(
+    (mappingId: string) => {
+      setFolderMappings((prev) => prev.filter((m) => m.id !== mappingId));
+      pushToast({
+        title: 'Folder mapping removed',
+        tone: 'neutral',
+      });
+    },
+    [pushToast]
+  );
+
+  const handleMarkMappingSynced = useCallback((mappingId: string, deviceId: string) => {
+    const now = Date.now();
+    setFolderMappings((prev) =>
+      prev.map((m) => {
+        if (m.id !== mappingId) return m;
+        const binding = m.deviceBindings[deviceId];
+        if (!binding) return m;
+        return {
+          ...m,
+          updatedAt: now,
+          deviceBindings: {
+            ...m.deviceBindings,
+            [deviceId]: {
+              ...binding,
+              lastSyncedAt: now,
+            },
+          },
+        };
+      })
+    );
+  }, []);
+
+  /**
+   * Reconciles this playing device's catalog with Google Drive as the authoritative source of truth
+   * (canonical manifest playlists/songs/mappings + all Drive audio files), translating paths to this device's folder mappings.
+   */
+  const handleSyncFromDriveSourceOfTruth = useCallback(
+    (payload: {
+      manifest: CrateSyncLibraryBackupPayload | null;
+      driveAudioFiles: DriveFileItem[];
+      folderLabel: string;
+      mappedDriveFolderId?: string | null;
+      replaceWithSourceOfTruth: boolean;
+    }): {
+      addedSongs: number;
+      updatedSongs: number;
+      playlistCount: number;
+      syncedTrackIds: string[];
+    } => {
+      const now = Date.now();
+      const existingTracks = tracksRef.current;
+
+      // Merge remote device profiles & cross-device folder mappings first so path translation uses latest bindings
+      const effectiveMappings =
+        payload.manifest?.folderMappings && payload.manifest.folderMappings.length > 0
+          ? mergeFolderMappings(
+              folderMappingsRef.current,
+              payload.manifest.folderMappings,
+              true
+            )
+          : folderMappingsRef.current;
+
+      if (payload.manifest?.devices && payload.manifest.devices.length > 0) {
+        setDevices((prev) =>
+          mergeDeviceProfiles(prev, payload.manifest!.devices ?? [], currentDeviceRef.current)
+        );
+      }
+      if (payload.manifest?.folderMappings && payload.manifest.folderMappings.length > 0) {
+        setFolderMappings(effectiveMappings);
+      }
+
+      const activeDeviceId = currentDeviceRef.current.id;
+      const explicitBinding = payload.mappedDriveFolderId
+        ? resolveLocalBindingForDriveFolder(
+            payload.mappedDriveFolderId,
+            effectiveMappings,
+            activeDeviceId
+          )
+        : null;
+
+      const existingByDriveId = new Map<string, LocalTrack>();
+      const existingById = new Map<string, LocalTrack>();
+      const existingByFileKey = new Map<string, LocalTrack>();
+      const existingByNameSize = new Map<string, LocalTrack>();
+
+      for (const t of existingTracks) {
+        if (t.driveFileId) existingByDriveId.set(t.driveFileId, t);
+        existingById.set(t.id, t);
+        existingByFileKey.set(t.fileKey.toLowerCase(), t);
+        if (t.fileSize > 0) {
+          existingByNameSize.set(`${t.fileName.toLowerCase()}::${t.fileSize}`, t);
+        }
+      }
+
+      const idRemap = new Map<string, string>();
+      const nextById = new Map<string, LocalTrack>();
+      const syncedTrackIds: string[] = [];
+      let addedSongs = 0;
+      let updatedSongs = 0;
+
+      if (!payload.replaceWithSourceOfTruth) {
+        for (const t of existingTracks) {
+          nextById.set(t.id, t);
+        }
+      }
+
+      const resolveCachedKey = (candidate: LocalTrack, existing?: LocalTrack): string => {
+        if (
+          existing &&
+          (fileMapRef.current.has(existing.fileKey) ||
+            storedAudioKeysRef.current.has(existing.fileKey))
+        ) {
+          return existing.fileKey;
+        }
+        return candidate.fileKey;
+      };
+
+      // Helper to resolve mapped local path for a Drive track on this playing device
+      const resolveDeviceMappedLocation = (
+        fileName: string,
+        drivePath: string | null | undefined,
+        parentFolderIds?: string[]
+      ): { folderName: string; relativePath: string } | null => {
+        if (explicitBinding) {
+          return translateRelativePathForDevice(
+            fileName,
+            explicitBinding.binding.localFolderPath,
+            explicitBinding.mapping.driveFolderName
+          );
+        }
+        if (parentFolderIds && parentFolderIds.length > 0) {
+          for (const pid of parentFolderIds) {
+            const matchedBind = resolveLocalBindingForDriveFolder(
+              pid,
+              effectiveMappings,
+              activeDeviceId
+            );
+            if (matchedBind) {
+              return translateRelativePathForDevice(
+                fileName,
+                matchedBind.binding.localFolderPath,
+                matchedBind.mapping.driveFolderName
+              );
+            }
+          }
+        }
+        if (drivePath) {
+          const byName = effectiveMappings.find(
+            (m) =>
+              m.driveFolderName.toLowerCase() === drivePath.toLowerCase() &&
+              Boolean(m.deviceBindings[activeDeviceId])
+          );
+          if (byName) {
+            return translateRelativePathForDevice(
+              fileName,
+              byName.deviceBindings[activeDeviceId].localFolderPath,
+              byName.driveFolderName
+            );
+          }
+        }
+        return null;
+      };
+
+      // 1. Reconcile tracks from the canonical Drive manifest
+      if (payload.manifest) {
+        for (const incoming of payload.manifest.tracks) {
+          const mappedLoc = resolveDeviceMappedLocation(
+            incoming.fileName,
+            incoming.drivePath
+          );
+          const matched =
+            (incoming.driveFileId ? existingByDriveId.get(incoming.driveFileId) : undefined) ??
+            existingById.get(incoming.id) ??
+            existingByFileKey.get(incoming.fileKey.toLowerCase()) ??
+            (incoming.fileSize > 0
+              ? existingByNameSize.get(`${incoming.fileName.toLowerCase()}::${incoming.fileSize}`)
+              : undefined);
+
+          if (matched) {
+            const keptFileKey = resolveCachedKey(incoming, matched);
+            const isCachedHere =
+              fileMapRef.current.has(keptFileKey) || storedAudioKeysRef.current.has(keptFileKey);
+            idRemap.set(incoming.id, matched.id);
+            nextById.set(matched.id, {
+              ...matched,
+              ...incoming,
+              id: matched.id,
+              fileKey: keptFileKey,
+              folderName: mappedLoc?.folderName ?? matched.folderName ?? incoming.folderName,
+              relativePath: mappedLoc?.relativePath ?? matched.relativePath ?? incoming.relativePath,
+              coverArtUrl: incoming.coverArtUrl || matched.coverArtUrl,
+              cachedOnDeviceAt: isCachedHere ? matched.cachedOnDeviceAt ?? now : null,
+              isMissingOnDevice: false,
+            });
+            updatedSongs += 1;
+          } else {
+            idRemap.set(incoming.id, incoming.id);
+            const isCachedHere =
+              fileMapRef.current.has(incoming.fileKey) ||
+              storedAudioKeysRef.current.has(incoming.fileKey);
+            nextById.set(incoming.id, {
+              ...incoming,
+              folderName: mappedLoc?.folderName ?? incoming.folderName,
+              relativePath: mappedLoc?.relativePath ?? incoming.relativePath,
+              cachedOnDeviceAt: isCachedHere ? now : null,
+              isMissingOnDevice: false,
+            });
+            addedSongs += 1;
+          }
+        }
+      }
+
+      // Index current reconciled set by driveFileId & fileName+size so Drive audio files attach cleanly
+      const reconciledByDriveId = new Map<string, LocalTrack>();
+      const reconciledByNameSize = new Map<string, LocalTrack>();
+      for (const t of nextById.values()) {
+        if (t.driveFileId) reconciledByDriveId.set(t.driveFileId, t);
+        if (t.fileSize > 0) {
+          reconciledByNameSize.set(`${t.fileName.toLowerCase()}::${t.fileSize}`, t);
+        }
+      }
+
+      // 2. Reconcile actual audio files discovered in Google Drive
+      for (const driveFile of payload.driveAudioFiles) {
+        const effectiveDrivePath = driveFile.folderPath || payload.folderLabel;
+        const mappedLoc = resolveDeviceMappedLocation(
+          driveFile.name,
+          effectiveDrivePath,
+          driveFile.parents
+        );
+        // Preserve nested subfolder hierarchy inside mapped Drive folder (e.g. Music/Artist/Album -> LocalMusic/Artist/Album)
+        let finalMappedLoc = mappedLoc;
+        if (explicitBinding && driveFile.folderPath && explicitBinding.binding.localFolderPath) {
+          const rootNorm = payload.folderLabel.replace(/^\/+|\/+$/g, '');
+          const filePathNorm = driveFile.folderPath.replace(/^\/+|\/+$/g, '');
+          if (
+            rootNorm &&
+            filePathNorm.toLowerCase().startsWith(`${rootNorm.toLowerCase()}/`)
+          ) {
+            const subSuffix = filePathNorm.slice(rootNorm.length + 1);
+            const localRoot = explicitBinding.binding.localFolderPath.replace(/^\/+|\/+$/g, '');
+            const combinedLocalDir = subSuffix ? `${localRoot}/${subSuffix}` : localRoot;
+            const leafFolder = combinedLocalDir.split('/').pop() || localRoot;
+            finalMappedLoc = {
+              folderName: leafFolder,
+              relativePath: `${combinedLocalDir}/${driveFile.name}`,
+            };
+          }
+        }
+        const matched =
+          reconciledByDriveId.get(driveFile.id) ??
+          existingByDriveId.get(driveFile.id) ??
+          (driveFile.size > 0
+            ? reconciledByNameSize.get(`${driveFile.name.toLowerCase()}::${driveFile.size}`) ??
+              existingByNameSize.get(`${driveFile.name.toLowerCase()}::${driveFile.size}`)
+            : undefined);
+
+        if (matched) {
+          const isCachedHere =
+            fileMapRef.current.has(matched.fileKey) ||
+            storedAudioKeysRef.current.has(matched.fileKey);
+          nextById.set(matched.id, {
+            ...matched,
+            driveFileId: driveFile.id,
+            driveModifiedTime: driveFile.modifiedTime,
+            drivePath: effectiveDrivePath,
+            folderName: finalMappedLoc?.folderName ?? matched.folderName,
+            relativePath: finalMappedLoc?.relativePath ?? matched.relativePath,
+            fileSize: driveFile.size || matched.fileSize,
+            cachedOnDeviceAt: isCachedHere ? matched.cachedOnDeviceAt ?? now : null,
+            isMissingOnDevice: false,
+            lastSeenAt: now,
+          });
+          syncedTrackIds.push(matched.id);
+          updatedSongs += 1;
+        } else {
+          const stub = buildTrackStubFromDriveAudio(driveFile, effectiveDrivePath);
+          const isCachedHere =
+            fileMapRef.current.has(stub.fileKey) || storedAudioKeysRef.current.has(stub.fileKey);
+          nextById.set(stub.id, {
+            ...stub,
+            folderName: finalMappedLoc?.folderName ?? stub.folderName,
+            relativePath: finalMappedLoc?.relativePath ?? stub.relativePath,
+            cachedOnDeviceAt: isCachedHere ? now : null,
+          });
+          syncedTrackIds.push(stub.id);
+          addedSongs += 1;
+        }
+      }
+
+      const finalTracks = Array.from(nextById.values()).sort((a, b) => b.addedAt - a.addedAt);
+      setTracks(finalTracks);
+
+      const remapTrackIds = (ids: string[]): string[] => {
+        const seen = new Set<string>();
+        const out: string[] = [];
+        for (const id of ids) {
+          const mapped = idRemap.get(id) ?? id;
+          if (!seen.has(mapped) && nextById.has(mapped)) {
+            seen.add(mapped);
+            out.push(mapped);
+          }
+        }
+        return out;
+      };
+
+      let playlistCount = 0;
+      if (payload.manifest) {
+        const incomingPlaylists = payload.manifest.playlists.map((pl) => ({
+          ...pl,
+          trackIds: remapTrackIds(pl.trackIds),
+          syncedTrackIds: remapTrackIds(pl.syncedTrackIds ?? []),
+        }));
+        playlistCount = incomingPlaylists.length;
+
+        if (payload.replaceWithSourceOfTruth) {
+          setPlaylists(incomingPlaylists);
+          setSmartPlaylists(payload.manifest.smartPlaylists);
+          setSyncHistory(payload.manifest.syncHistory);
+        } else {
+          setPlaylists((prev) => {
+            const byPlId = new Map(prev.map((p) => [p.id, p]));
+            const merged = [...prev];
+            for (const incomingPl of incomingPlaylists) {
+              const existing = byPlId.get(incomingPl.id);
+              if (existing) {
+                const idx = merged.findIndex((p) => p.id === existing.id);
+                if (idx !== -1) {
+                  merged[idx] = {
+                    ...incomingPl,
+                    trackIds: Array.from(new Set([...incomingPl.trackIds, ...existing.trackIds])),
+                  };
+                }
+              } else {
+                merged.unshift(incomingPl);
+              }
+            }
+            return merged;
+          });
+
+          if (payload.manifest.smartPlaylists.length > 0) {
+            setSmartPlaylists((prev) => {
+              const ids = new Set(prev.map((sp) => sp.id));
+              const names = new Set(prev.map((sp) => sp.name.toLowerCase()));
+              const additions = payload.manifest!.smartPlaylists.filter(
+                (sp) => !ids.has(sp.id) && !names.has(sp.name.toLowerCase())
+              );
+              return additions.length > 0 ? [...additions, ...prev] : prev;
+            });
+          }
+        }
+      }
+
+      return { addedSongs, updatedSongs, playlistCount, syncedTrackIds };
+    },
+    []
+  );
+
+  const handleLinkUploadedDriveTracks = useCallback(
+    (
+      updates: Array<{
+        trackId: string;
+        driveFileId: string;
+        driveModifiedTime: string;
+        drivePath: string;
+      }>
+    ) => {
+      if (updates.length === 0) return;
+      const byTrackId = new Map(updates.map((u) => [u.trackId, u]));
+      setTracks((prev) =>
+        prev.map((t) => {
+          const link = byTrackId.get(t.id);
+          return link
+            ? {
+                ...t,
+                driveFileId: link.driveFileId,
+                driveModifiedTime: link.driveModifiedTime,
+                drivePath: link.drivePath,
+              }
+            : t;
+        })
+      );
+    },
+    []
+  );
+
+  const handleEvictTrackCache = useCallback(
+    async (fileKeys: string[]) => {
+      if (fileKeys.length === 0) return;
+      for (const key of fileKeys) {
+        fileMapRef.current.delete(key);
+      }
+      await deleteAudioBlobs(fileKeys);
+      const evictedSet = new Set(fileKeys);
+      setTracks((prev) =>
+        prev.map((t) =>
+          evictedSet.has(t.fileKey) ? { ...t, cachedOnDeviceAt: null } : t
+        )
+      );
+      await refreshDeviceCacheStats();
+      pushToast({
+        title: 'Removed from device cache',
+        description: 'Original song remains stored in Google Drive.',
+        tone: 'neutral',
+      });
+    },
+    [refreshDeviceCacheStats, pushToast]
+  );
+
+  const handleClearAllDeviceCache = useCallback(async () => {
+    fileMapRef.current.clear();
+    await clearAllAudioBlobs();
+    setTracks((prev) => prev.map((t) => ({ ...t, cachedOnDeviceAt: null })));
+    await refreshDeviceCacheStats();
+    pushToast({
+      title: 'Device audio cache cleared',
+      description: 'Google Drive source-of-truth songs and playlists remain intact.',
+      tone: 'neutral',
+    });
+  }, [refreshDeviceCacheStats, pushToast]);
+
   const handleConfirmPendingAction = () => {
     if (!pendingConfirm) return;
 
@@ -1380,7 +2297,7 @@ export default function App() {
       return { section: 'Smart Playlists', sub: activeSmartPlaylist.name };
     }
     if (activeView === 'sync') return { section: 'Sync Queue' };
-    if (activeView === 'transfer') return { section: 'Import & Export' };
+    if (activeView === 'transfer') return { section: 'Drive Sync & Transfer' };
     return { section: 'Device Storage' };
   }, [activeView, activePlaylist, activeSmartPlaylist]);
 
@@ -1429,6 +2346,8 @@ export default function App() {
             setScannerGroupByGenrePreset(false);
             setScannerSearchPreset('');
             setScannerOpenCleanupPreset(false);
+            setScannerOpenDuplicatesPreset(false);
+            setScannerOpenIntegrityPreset(false);
           }
           if (view !== 'playlist') setActivePlaylistId(null);
           if (view !== 'smart-playlist') setActiveSmartPlaylistId(null);
@@ -1545,9 +2464,12 @@ export default function App() {
               setScannerGroupByGenrePreset(Boolean(options?.groupByGenre));
               setScannerSearchPreset(options?.query ?? '');
               setScannerOpenCleanupPreset(Boolean(options?.openCleanup));
+              setScannerOpenDuplicatesPreset(Boolean(options?.openDuplicates));
+              setScannerOpenIntegrityPreset(Boolean(options?.openIntegrity));
               setActivePlaylistId(null);
               setActiveView('scanner');
             }}
+            integrityResults={integrityResults}
             onOpenPlaylist={(id) => {
               setActivePlaylistId(id);
               setActiveView('playlist');
@@ -1573,6 +2495,7 @@ export default function App() {
             onOpenBatchTagEditor={(trackIds, contextLabel) =>
               setBatchTagModal({ open: true, trackIds, contextLabel })
             }
+            onApplyTrackGenres={handleApplyTrackGenres}
           />
         )}
 
@@ -1586,6 +2509,8 @@ export default function App() {
             initialGroupByGenre={scannerGroupByGenrePreset}
             initialSearchQuery={scannerSearchPreset}
             initialOpenCleanup={scannerOpenCleanupPreset}
+            initialOpenDuplicates={scannerOpenDuplicatesPreset}
+            initialOpenIntegrity={scannerOpenIntegrityPreset}
             watchedFolder={watchedFolder}
             autoWatchIntervalSec={autoWatchIntervalSec}
             isScanning={isScanning}
@@ -1593,6 +2518,9 @@ export default function App() {
             scanNotice={scanNotice}
             isHashingDuplicates={isHashingDuplicates}
             hashProgress={hashProgress}
+            integrityResults={integrityResults}
+            isScanningIntegrity={isScanningIntegrity}
+            integrityProgress={integrityProgress}
             activePlayingTrackId={audioPlayer.state.activeTrackId}
             isAudioPlaying={audioPlayer.state.isPlaying}
             hasPlayableFile={(fileKey) =>
@@ -1604,6 +2532,8 @@ export default function App() {
             onRescanFolder={() => handleRescanWatchedFolder(false)}
             onChangeAutoWatch={setAutoWatchIntervalSec}
             onComputeMissingHashes={handleComputeMissingHashes}
+            onRunIntegrityScan={handleRunIntegrityScan}
+            onRepairTrackMetadata={handleRepairTrackMetadata}
             onRequestRemoveDuplicates={(trackIds, remapToKeep) =>
               setPendingConfirm({ kind: 'remove-duplicates', trackIds, remapToKeep })
             }
@@ -1713,9 +2643,50 @@ export default function App() {
 
         {activeView === 'transfer' && (
           <TransferView
+            tracks={tracks}
             playlists={playlists}
+            smartPlaylists={smartPlaylists}
+            syncHistory={syncHistory}
+            watchedFolderName={watchedFolderName}
+            availableLocalFolders={availableFolders}
+            currentDevice={currentDevice}
+            devices={devices}
+            folderMappings={folderMappings}
             trackMap={trackMap}
+            storedAudioKeys={storedAudioKeys}
+            deviceCacheBytes={deviceCacheBytes}
+            hasPlayableFile={(fileKey) =>
+              fileMapRef.current.has(fileKey) || storedAudioKeys.has(fileKey)
+            }
+            getCachedAudioBlob={async (fileKey) =>
+              fileMapRef.current.get(fileKey) ?? (await loadAudioBlob(fileKey))
+            }
+            onRenameCurrentDevice={handleRenameCurrentDevice}
+            onSaveFolderMapping={handleSaveFolderMapping}
+            onUnbindDeviceFromMapping={handleUnbindDeviceFromMapping}
+            onDeleteFolderMapping={handleDeleteFolderMapping}
+            onMarkMappingSynced={handleMarkMappingSynced}
             onImportPlaylist={handleImportPlaylist}
+            onRestoreLibraryBackup={handleRestoreLibraryBackup}
+            onSyncFromDriveSourceOfTruth={handleSyncFromDriveSourceOfTruth}
+            onLinkUploadedDriveTracks={handleLinkUploadedDriveTracks}
+            onCacheDriveTrackAudio={handleCacheDriveTrackAudio}
+            onEvictTrackCache={handleEvictTrackCache}
+            onClearAllDeviceCache={handleClearAllDeviceCache}
+            onPlayTrack={audioPlayer.playTrack}
+            onIngestLocalFolderEntries={(entries, folderRootName) =>
+              ingestAudioEntries(entries, {
+                folderRootName,
+                isFullFolderScan: false,
+              })
+            }
+            onNotify={(payload) =>
+              pushToast({
+                title: payload.title,
+                description: payload.description,
+                tone: payload.tone ?? 'neutral',
+              })
+            }
           />
         )}
 
@@ -1748,7 +2719,12 @@ export default function App() {
             onToggleMute={audioPlayer.toggleMute}
             onToggleShuffle={audioPlayer.toggleShuffle}
             onCycleRepeat={audioPlayer.cycleRepeatMode}
-            onCycleCrossfade={audioPlayer.cycleCrossfade}
+            onSetCrossfadeSeconds={audioPlayer.setCrossfadeSeconds}
+            onSetCrossfadeCurve={audioPlayer.setCrossfadeCurve}
+            onSetManualSkipCrossfade={audioPlayer.setManualSkipCrossfade}
+            onSetGaplessPlayback={audioPlayer.setGaplessPlayback}
+            onSetGaplessAlbumContinuity={audioPlayer.setGaplessAlbumContinuity}
+            onResetTransitionSettings={audioPlayer.resetTransitionSettings}
             onSetReplayGainMode={audioPlayer.setReplayGainMode}
             onSetReplayGainTargetLufs={audioPlayer.setReplayGainTargetLufs}
             onSetReplayGainPreampDb={audioPlayer.setReplayGainPreampDb}
