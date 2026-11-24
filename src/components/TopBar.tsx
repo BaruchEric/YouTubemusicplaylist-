@@ -60,9 +60,9 @@ export function TopBar({
         : 'Background directory watcher is idle — click to view scan logs';
 
   return (
-    <header className="h-14 px-4 sm:px-6 border-b border-white/[0.07] bg-[#0B0C0E] flex items-center justify-between gap-4 shrink-0">
+    <header className="h-14 px-3 sm:px-6 border-b border-white/[0.07] bg-[#0B0C0E] flex items-center justify-between gap-2 sm:gap-4 shrink-0">
       {/* Left: Mobile Menu + Contextual Breadcrumb */}
-      <div className="flex items-center gap-3 min-w-0">
+      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
         <button
           type="button"
           onClick={onOpenMobileMenu}
@@ -73,20 +73,20 @@ export function TopBar({
         </button>
 
         <nav aria-label="Breadcrumb" className="flex items-center gap-2 text-sm min-w-0">
-          <span className="text-[#717786] whitespace-nowrap shrink-0">Library</span>
-          <span className="text-[#4B5563]" aria-hidden="true">
+          <span className="hidden sm:inline text-[#717786] whitespace-nowrap shrink-0">Library</span>
+          <span className="hidden sm:inline text-[#4B5563]" aria-hidden="true">
             /
           </span>
           <span
             className={`${
-              subLabel ? 'text-[#9CA3AF]' : 'text-white font-medium'
-            } whitespace-nowrap shrink-0`}
+              subLabel ? 'hidden sm:inline text-[#9CA3AF]' : 'text-white font-medium'
+            } whitespace-nowrap truncate`}
           >
             {sectionLabel}
           </span>
           {subLabel && (
             <>
-              <span className="text-[#4B5563]" aria-hidden="true">
+              <span className="hidden sm:inline text-[#4B5563]" aria-hidden="true">
                 /
               </span>
               <span className="text-white font-medium truncate">{subLabel}</span>
@@ -96,7 +96,7 @@ export function TopBar({
       </div>
 
       {/* Right: Watcher Status Indicator + Clean Single-Line Action Controls */}
-      <div className="flex items-center gap-2 shrink-0">
+      <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
         <button
           type="button"
           onClick={onOpenScanLogs}
@@ -112,13 +112,13 @@ export function TopBar({
             <Clock className="h-3.5 w-3.5 text-[#6B7280] shrink-0" />
           )}
           <span
-            className={
+            className={`hidden sm:inline ${
               watcherStatus === 'syncing'
                 ? 'text-white'
                 : watcherStatus === 'watching'
                   ? 'text-[#E5E7EB]'
                   : 'text-[#8B92A2]'
-            }
+            }`}
           >
             {watcherLabel}
           </span>
@@ -138,7 +138,8 @@ export function TopBar({
           type="button"
           onClick={onOpenSmartSearch}
           title="Open Smart Search (⌘K / Ctrl+K)"
-          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-xs text-[#9CA3AF] bg-[#13151B] border border-white/[0.08] hover:text-white hover:border-white/[0.18] transition-colors whitespace-nowrap shrink-0"
+          aria-label="Open Smart Search"
+          className="inline-flex items-center gap-2 px-2.5 sm:px-3 py-1.5 rounded-md text-xs text-[#9CA3AF] bg-[#13151B] border border-white/[0.08] hover:text-white hover:border-white/[0.18] transition-colors whitespace-nowrap shrink-0"
         >
           <Search className="h-3.5 w-3.5 text-[#717786]" />
           <span className="hidden md:inline">Smart Search</span>
@@ -159,21 +160,28 @@ export function TopBar({
           type="button"
           onClick={onPickFolder}
           disabled={isScanning}
-          className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md text-xs font-medium text-[#E5E7EB] bg-[#161920] border border-white/[0.09] hover:bg-[#1E222B] hover:border-white/[0.16] disabled:opacity-50 transition-colors whitespace-nowrap shrink-0"
+          title={isScanning ? 'Scanning...' : 'Scan Folder'}
+          aria-label={isScanning ? 'Scanning' : 'Scan Folder'}
+          className="inline-flex items-center gap-2 px-2.5 sm:px-3.5 py-2 rounded-md text-xs font-medium text-[#E5E7EB] bg-[#161920] border border-white/[0.09] hover:bg-[#1E222B] hover:border-white/[0.16] disabled:opacity-50 transition-colors whitespace-nowrap shrink-0"
         >
           <FolderPlus className="h-3.5 w-3.5 text-[#9CA3AF]" />
-          <span>{isScanning ? 'Scanning...' : 'Scan Folder'}</span>
+          <span className="hidden sm:inline">{isScanning ? 'Scanning...' : 'Scan Folder'}</span>
         </button>
 
         <button
           type="button"
           onClick={onOpenSyncQueue}
-          className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md text-xs font-medium text-white bg-[#FF1F3D] hover:bg-[#E11934] transition-colors whitespace-nowrap shrink-0"
+          title={pendingSyncCount > 0 ? `Sync Queue (${pendingSyncCount} pending)` : 'Sync Queue'}
+          aria-label={pendingSyncCount > 0 ? `Sync Queue, ${pendingSyncCount} pending` : 'Sync Queue'}
+          className="inline-flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3.5 py-2 rounded-md text-xs font-medium text-white bg-[#FF1F3D] hover:bg-[#E11934] transition-colors whitespace-nowrap shrink-0"
         >
           <RefreshCw className="h-3.5 w-3.5" />
-          <span>
+          <span className="hidden sm:inline">
             {pendingSyncCount > 0 ? `Sync (${pendingSyncCount})` : 'Sync Queue'}
           </span>
+          {pendingSyncCount > 0 && (
+            <span className="sm:hidden font-mono tabular-nums">{pendingSyncCount}</span>
+          )}
         </button>
       </div>
     </header>
