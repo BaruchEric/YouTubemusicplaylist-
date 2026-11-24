@@ -1,9 +1,15 @@
-import type { LocalTrack, Playlist, PlaylistDiff } from '../types/music';
+import type { LocalTrack, Playlist, PlaylistDiff, ScanErrorEntry } from '../types/music';
 import { isAudioFile } from './audioMetadata';
 
 export interface ScannedFileEntry {
   file: File;
   relativePath: string;
+}
+
+export interface DirectoryWalkReport {
+  entries: ScannedFileEntry[];
+  totalFilesEncountered: number;
+  errors: ScanErrorEntry[];
 }
 
 /**
@@ -26,13 +32,16 @@ export function supportsDirectoryPicker(): boolean {
 }
 
 /**
- * Recursively walks a FileSystemDirectoryHandle and collects all audio files.
+ * Recursively walks a FileSystemDirectoryHandle, collecting audio files while recording
+ * total encountered files and any unreadable file / inaccessible subfolder errors.
  */
-export async function walkDirectoryHandle(
+export async function walkDirectoryHandleWithReport(
   dirHandle: FileSystemDirectoryHandle,
   prefix = ''
-): Promise<ScannedFileEntry[]> {
-  const results: ScannedFileEntry[] = [];
+): Promise<DirectoryWalkReport> {
+  const entries: ScannedFileEntry[] = [];
+  const errors: ScanErrorEntry[] = [];
+  let totalFilesEncountered = 0;
   const rootPrefix = prefix || dirHandle.name;
 
   const entriesIterable = (
@@ -45,31 +54,59 @@ export async function walkDirectoryHandle(
     if (name.startsWith('.')) continue;
 
     if (handle.kind === 'file') {
+      totalFilesEncountered += 1;
       try {
         const file = await (handle as FileSystemFileHandle).getFile();
         if (isAudioFile(file)) {
-          results.push({
+          entries.push({
             file,
             relativePath: `${rootPrefix}/${name}`,
           });
         }
-      } catch {
-        // Ignore unreadable locked file
+      } catch (err) {
+        errors.push({
+          path: `${rootPrefix}/${name}`,
+          message:
+            err instanceof Error && err.message
+              ? err.message
+              : 'File could not be read (locked or permission denied).',
+          code: 'unreadable-file',
+        });
       }
     } else if (handle.kind === 'directory') {
       try {
-        const nested = await walkDirectoryHandle(
+        const nested = await walkDirectoryHandleWithReport(
           handle as FileSystemDirectoryHandle,
           `${rootPrefix}/${name}`
         );
-        results.push(...nested);
-      } catch {
-        // Ignore inaccessible subfolder
+        entries.push(...nested.entries);
+        totalFilesEncountered += nested.totalFilesEncountered;
+        errors.push(...nested.errors);
+      } catch (err) {
+        errors.push({
+          path: `${rootPrefix}/${name}`,
+          message:
+            err instanceof Error && err.message
+              ? err.message
+              : 'Subfolder could not be accessed.',
+          code: 'inaccessible-folder',
+        });
       }
     }
   }
 
-  return results;
+  return { entries, totalFilesEncountered, errors };
+}
+
+/**
+ * Recursively walks a FileSystemDirectoryHandle and collects all audio files.
+ */
+export async function walkDirectoryHandle(
+  dirHandle: FileSystemDirectoryHandle,
+  prefix = ''
+): Promise<ScannedFileEntry[]> {
+  const report = await walkDirectoryHandleWithReport(dirHandle, prefix);
+  return report.entries;
 }
 
 interface WebkitFileSystemEntry {
@@ -88,18 +125,30 @@ interface WebkitFileSystemEntry {
 
 async function readWebkitEntry(
   entry: WebkitFileSystemEntry,
-  parentPath = ''
+  parentPath = '',
+  errors: ScanErrorEntry[] = []
 ): Promise<ScannedFileEntry[]> {
   if (entry.name.startsWith('.')) return [];
 
   if (entry.isFile && entry.file) {
     return new Promise<ScannedFileEntry[]>((resolve) => {
+      const targetPath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
       entry.file!(
         (file) => {
           const rel = parentPath ? `${parentPath}/${file.name}` : file.name;
           resolve([{ file, relativePath: rel }]);
         },
-        () => resolve([])
+        (err) => {
+          errors.push({
+            path: targetPath,
+            message:
+              err instanceof Error && err.message
+                ? err.message
+                : 'Dropped file could not be read.',
+            code: 'unreadable-file',
+          });
+          resolve([]);
+        }
       );
     });
   }
@@ -121,7 +170,17 @@ async function readWebkitEntry(
               readBatch();
             }
           },
-          () => resolve()
+          (err) => {
+            errors.push({
+              path: dirPath,
+              message:
+                err instanceof Error && err.message
+                  ? err.message
+                  : 'Dropped folder could not be read completely.',
+              code: 'inaccessible-folder',
+            });
+            resolve();
+          }
         );
       };
       readBatch();
@@ -129,7 +188,7 @@ async function readWebkitEntry(
 
     const nestedResults: ScannedFileEntry[] = [];
     for (const child of allChildren) {
-      const childFiles = await readWebkitEntry(child, dirPath);
+      const childFiles = await readWebkitEntry(child, dirPath, errors);
       nestedResults.push(...childFiles);
     }
     return nestedResults;
@@ -144,9 +203,10 @@ async function readWebkitEntry(
  */
 export async function extractDroppedEntries(
   dataTransfer: DataTransfer
-): Promise<{ entries: ScannedFileEntry[]; folderRootName?: string }> {
+): Promise<{ entries: ScannedFileEntry[]; folderRootName?: string; errors: ScanErrorEntry[] }> {
   const items = Array.from(dataTransfer.items ?? []);
   const webkitEntries: WebkitFileSystemEntry[] = [];
+  const errors: ScanErrorEntry[] = [];
 
   for (const item of items) {
     const withWebkit = item as DataTransferItem & {
@@ -165,10 +225,10 @@ export async function extractDroppedEntries(
       folderRootName = webkitEntries[0].name;
     }
     for (const entry of webkitEntries) {
-      const extracted = await readWebkitEntry(entry);
+      const extracted = await readWebkitEntry(entry, '', errors);
       results.push(...extracted);
     }
-    return { entries: results, folderRootName };
+    return { entries: results, folderRootName, errors };
   }
 
   const files = Array.from(dataTransfer.files ?? []);
@@ -178,6 +238,7 @@ export async function extractDroppedEntries(
       relativePath:
         (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
     })),
+    errors,
   };
 }
 

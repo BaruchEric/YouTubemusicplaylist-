@@ -9,6 +9,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  ScrollText,
   SlidersHorizontal,
   X,
 } from 'lucide-react';
@@ -31,6 +32,8 @@ interface SidebarProps {
   diffMap: Map<string, PlaylistDiff>;
   totalLocalTracks: number;
   totalPendingSyncs: number;
+  scanLogsCount: number;
+  scanErrorCount: number;
   watchedFolder: WatchedFolderInfo | null;
   isScanning: boolean;
   mobileOpen: boolean;
@@ -54,6 +57,8 @@ export function Sidebar({
   diffMap,
   totalLocalTracks,
   totalPendingSyncs,
+  scanLogsCount,
+  scanErrorCount,
   watchedFolder,
   isScanning,
   mobileOpen,
@@ -90,6 +95,13 @@ export function Sidebar({
       icon: FolderSync,
       count: totalPendingSyncs > 0 ? totalPendingSyncs : undefined,
       highlightCount: totalPendingSyncs > 0,
+    },
+    {
+      id: 'scan-logs',
+      label: 'Scan Logs',
+      icon: ScrollText,
+      count: scanLogsCount > 0 ? scanLogsCount : undefined,
+      highlightCount: scanErrorCount > 0,
     },
     {
       id: 'transfer',

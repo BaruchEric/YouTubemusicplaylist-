@@ -5,6 +5,7 @@ import { DashboardView } from './components/DashboardView';
 import { MiniPlayer } from './components/MiniPlayer';
 import { ConfirmModal, CreatePlaylistModal } from './components/Modals';
 import { PlaylistView } from './components/PlaylistView';
+import { ScanLogView } from './components/ScanLogView';
 import { ScannerView } from './components/ScannerView';
 import { Sidebar } from './components/Sidebar';
 import {
@@ -22,10 +23,14 @@ import { useAudioPlayer } from './hooks/useAudioPlayer';
 import { useToasts, type ToastStat } from './hooks/useToasts';
 import type {
   DeviceFolderBinding,
+  DirectoryWatcherStatus,
   DriveFolderMapping,
   LocalTrack,
   Playlist,
   PlaylistDiff,
+  ScanErrorEntry,
+  ScanLogEntry,
+  ScanTriggerSource,
   SmartPlaylist,
   SyncDeviceProfile,
   SyncEvent,
@@ -56,7 +61,7 @@ import {
   computePlaylistDiff,
   extractDroppedEntries,
   supportsDirectoryPicker,
-  walkDirectoryHandle,
+  walkDirectoryHandleWithReport,
   type ScannedFileEntry,
 } from './utils/syncEngine';
 import {
@@ -79,7 +84,8 @@ type PendingConfirm =
   | { kind: 'delete-smart-playlist'; smartPlaylistId: string; name: string }
   | { kind: 'delete-tracks'; trackIds: string[] }
   | { kind: 'remove-duplicates'; trackIds: string[]; remapToKeep: Record<string, string> }
-  | { kind: 'apply-sync'; playlistId: string; name: string; addCount: number; removeCount: number };
+  | { kind: 'apply-sync'; playlistId: string; name: string; addCount: number; removeCount: number }
+  | { kind: 'clear-scan-logs' };
 
 export default function App() {
   const [hydrated, setHydrated] = useState(false);
@@ -87,6 +93,7 @@ export default function App() {
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [smartPlaylists, setSmartPlaylists] = useState<SmartPlaylist[]>([]);
   const [syncHistory, setSyncHistory] = useState<SyncEvent[]>([]);
+  const [scanLogs, setScanLogs] = useState<ScanLogEntry[]>([]);
   const [watchedFolderName, setWatchedFolderName] = useState<string | null>(null);
   const [lastScannedAt, setLastScannedAt] = useState<number | null>(null);
   const [currentDevice, setCurrentDevice] = useState<SyncDeviceProfile>(() =>
@@ -288,6 +295,7 @@ export default function App() {
         })
       );
       setSyncHistory(savedState.syncHistory);
+      setScanLogs(savedState.scanLogs ?? []);
       setWatchedFolderName(savedState.watchedFolderName);
       setLastScannedAt(savedState.lastScannedAt);
       setDevices(mergeDeviceProfiles(savedState.devices ?? [], [], currentDeviceRef.current));
@@ -325,6 +333,7 @@ export default function App() {
       playlists,
       smartPlaylists,
       syncHistory,
+      scanLogs,
       watchedFolderName,
       lastScannedAt,
       devices,
@@ -336,6 +345,7 @@ export default function App() {
     playlists,
     smartPlaylists,
     syncHistory,
+    scanLogs,
     watchedFolderName,
     lastScannedAt,
     devices,
@@ -384,17 +394,49 @@ export default function App() {
     };
   }, [watchedFolderName, lastScannedAt, tracks, hasLiveHandle]);
 
+  const watcherStatus: DirectoryWatcherStatus = useMemo(() => {
+    if (isScanning) return 'syncing';
+    if (hasLiveHandle && autoWatchIntervalSec > 0) return 'watching';
+    return 'idle';
+  }, [isScanning, hasLiveHandle, autoWatchIntervalSec]);
+
+  const recentScanErrorCount = scanLogs[0]?.errors.length ?? 0;
+  const totalScanErrorCount = useMemo(
+    () => scanLogs.reduce((sum, entry) => sum + entry.errors.length, 0),
+    [scanLogs]
+  );
+
+  const appendScanLog = useCallback((entry: ScanLogEntry) => {
+    setScanLogs((prev) => [entry, ...prev].slice(0, 200));
+  }, []);
+
   /**
    * Core ingestion pipeline for scanned local audio entries.
    * Preserves existing YouTube matches and edited metadata for known files,
-   * and detects missing files when doing a full directory scan.
+   * detects missing files when doing a full directory scan, and records a ScanLogEntry.
    */
   const ingestAudioEntries = useCallback(
     async (
       entries: ScannedFileEntry[],
-      options: { folderRootName?: string; isFullFolderScan: boolean; quiet?: boolean }
+      options: {
+        folderRootName?: string;
+        isFullFolderScan: boolean;
+        quiet?: boolean;
+        source?: ScanTriggerSource;
+        startedAt?: number;
+        totalEncountered?: number;
+        walkErrors?: ScanErrorEntry[];
+      }
     ) => {
+      const startedAt = options.startedAt ?? Date.now();
+      const source: ScanTriggerSource =
+        options.source ?? (options.quiet ? 'background-watch' : 'manual-folder');
+      const folderLabelForLog = options.folderRootName || 'Local Files';
+      const errors: ScanErrorEntry[] = [...(options.walkErrors ?? [])];
       const audioEntries = entries.filter((e) => isAudioFile(e.file));
+      const totalFilesEncountered = Math.max(options.totalEncountered ?? entries.length, entries.length);
+      const skippedNonAudioCount = Math.max(0, totalFilesEncountered - audioEntries.length);
+
       if (audioEntries.length === 0) {
         const folderScope = options.folderRootName?.toLowerCase() ?? '';
         let newlyMissingCount = 0;
@@ -421,6 +463,25 @@ export default function App() {
           setLastScannedAt(Date.now());
         }
 
+        const completedAt = Date.now();
+        appendScanLog({
+          id: crypto.randomUUID(),
+          startedAt,
+          completedAt,
+          durationMs: Math.max(1, completedAt - startedAt),
+          source,
+          folderName: folderLabelForLog,
+          totalFilesEncountered,
+          audioFilesProcessed: 0,
+          addedCount: 0,
+          updatedCount: 0,
+          restoredCount: 0,
+          missingCount: newlyMissingCount > 0 ? newlyMissingCount : totalMissingInFolder,
+          skippedNonAudioCount,
+          status: errors.length > 0 ? 'completed-with-errors' : 'completed',
+          errors,
+        });
+
         if (options.quiet) {
           const stats: ToastStat[] = [
             { label: 'new', value: 0, tone: 'neutral' },
@@ -437,8 +498,8 @@ export default function App() {
               ? `${options.folderRootName} · 0 audio files found`
               : '0 audio files found',
             stats,
-            tone: newlyMissingCount > 0 ? 'warning' : 'neutral',
-            durationMs: newlyMissingCount > 0 ? 6000 : 4000,
+            tone: newlyMissingCount > 0 || errors.length > 0 ? 'warning' : 'neutral',
+            durationMs: newlyMissingCount > 0 || errors.length > 0 ? 6000 : 4000,
             action:
               newlyMissingCount > 0 || totalMissingInFolder > 0
                 ? {
@@ -450,7 +511,15 @@ export default function App() {
                       setActiveView('scanner');
                     },
                   }
-                : undefined,
+                : errors.length > 0
+                  ? {
+                      label: 'View scan log',
+                      onClick: () => {
+                        setActivePlaylistId(null);
+                        setActiveView('scan-logs');
+                      },
+                    }
+                  : undefined,
           });
         } else {
           setScanNotice(
@@ -508,7 +577,21 @@ export default function App() {
           void saveAudioBlob(targetKey, file);
 
           if (existing) {
-            const contentHash = existing.contentHash ?? (await computeAudioHash(file));
+            let contentHash = existing.contentHash ?? null;
+            if (!contentHash) {
+              try {
+                contentHash = await computeAudioHash(file);
+              } catch (hashErr) {
+                errors.push({
+                  path: relativePath,
+                  message:
+                    hashErr instanceof Error && hashErr.message
+                      ? `Hash computation failed: ${hashErr.message}`
+                      : 'Failed to compute audio fingerprint.',
+                  code: 'unreadable-file',
+                });
+              }
+            }
             updatedExistingIds.set(existing.id, {
               ...existing,
               contentHash,
@@ -519,9 +602,22 @@ export default function App() {
             try {
               const parsed = await extractLocalTrack(file, relativePath);
               newlyParsed.push(parsed);
-            } catch {
+            } catch (parseErr) {
+              errors.push({
+                path: relativePath,
+                message:
+                  parseErr instanceof Error && parseErr.message
+                    ? `Metadata parse fallback used: ${parseErr.message}`
+                    : 'Audio metadata tags could not be parsed; imported using filename fallback.',
+                code: 'metadata-parse',
+              });
               const ext = file.name.split('.').pop()?.toUpperCase() || 'AUDIO';
-              const fallbackHash = await computeAudioHash(file);
+              let fallbackHash: string | null = null;
+              try {
+                fallbackHash = await computeAudioHash(file);
+              } catch {
+                fallbackHash = null;
+              }
               newlyParsed.push({
                 id: crypto.randomUUID(),
                 fileKey: targetKey,
@@ -603,6 +699,24 @@ export default function App() {
         setLastScannedAt(now);
 
         const addedCount = newlyParsed.length;
+        const completedAt = Date.now();
+        appendScanLog({
+          id: crypto.randomUUID(),
+          startedAt,
+          completedAt,
+          durationMs: Math.max(1, completedAt - startedAt),
+          source,
+          folderName: folderLabelForLog,
+          totalFilesEncountered,
+          audioFilesProcessed: audioEntries.length,
+          addedCount,
+          updatedCount: updatedExistingIds.size,
+          restoredCount,
+          missingCount: newlyMissingCount > 0 ? newlyMissingCount : totalMissingInFolder,
+          skippedNonAudioCount,
+          status: errors.length > 0 ? 'completed-with-errors' : 'completed',
+          errors,
+        });
 
         if (options.quiet) {
           const stats: ToastStat[] = [];
@@ -619,7 +733,7 @@ export default function App() {
             }
             if (newlyMissingCount > 0) {
               stats.push({
-                label: newlyMissingCount === 1 ? 'missing' : 'missing',
+                label: 'missing',
                 value: newlyMissingCount,
                 tone: 'missing',
               });
@@ -646,37 +760,48 @@ export default function App() {
           const folderLabel = options.folderRootName ? `${options.folderRootName} · ` : '';
           pushToast({
             dedupeKey: 'background-scan',
-            title: 'Background scan complete',
+            title:
+              errors.length > 0
+                ? `Background scan finished (${errors.length} error${errors.length === 1 ? '' : 's'})`
+                : 'Background scan complete',
             description: `${folderLabel}${audioEntries.length} file${audioEntries.length === 1 ? '' : 's'} checked`,
             stats,
             tone:
-              newlyMissingCount > 0
+              newlyMissingCount > 0 || errors.length > 0
                 ? 'warning'
                 : addedCount > 0 || restoredCount > 0
                   ? 'success'
                   : 'neutral',
-            durationMs: hasDelta ? 6000 : 4000,
+            durationMs: hasDelta || errors.length > 0 ? 6000 : 4000,
             action:
-              newlyMissingCount > 0
+              errors.length > 0
                 ? {
-                    label: 'Review missing',
+                    label: 'View scan log',
                     onClick: () => {
-                      setScannerFilterPreset('all');
-                      setScannerOpenCleanupPreset(true);
                       setActivePlaylistId(null);
-                      setActiveView('scanner');
+                      setActiveView('scan-logs');
                     },
                   }
-                : addedCount > 0
+                : newlyMissingCount > 0
                   ? {
-                      label: 'View library',
+                      label: 'Review missing',
                       onClick: () => {
                         setScannerFilterPreset('all');
+                        setScannerOpenCleanupPreset(true);
                         setActivePlaylistId(null);
                         setActiveView('scanner');
                       },
                     }
-                  : undefined,
+                  : addedCount > 0
+                    ? {
+                        label: 'View library',
+                        onClick: () => {
+                          setScannerFilterPreset('all');
+                          setActivePlaylistId(null);
+                          setActiveView('scanner');
+                        },
+                      }
+                    : undefined,
           });
         } else {
           const parts: string[] = [];
@@ -689,6 +814,9 @@ export default function App() {
           if (totalMissingInFolder > 0) {
             parts.push(`${totalMissingInFolder} missing on device`);
           }
+          if (errors.length > 0) {
+            parts.push(`${errors.length} error${errors.length === 1 ? '' : 's'} logged`);
+          }
           const summary =
             parts.length > 0
               ? `${parts.join(' · ')} (${audioEntries.length} total scanned).`
@@ -700,7 +828,7 @@ export default function App() {
         setScanProgress(null);
       }
     },
-    [pushToast]
+    [appendScanLog, pushToast, refreshDeviceCacheStats]
   );
 
   // Re-scan active mounted FileSystemDirectoryHandle
@@ -711,6 +839,9 @@ export default function App() {
         folderInputRef.current?.click();
         return;
       }
+
+      const startedAt = Date.now();
+      const source: ScanTriggerSource = quiet ? 'background-watch' : 'manual-folder';
 
       try {
         // Request read permission if handle was restored from IndexedDB
@@ -724,25 +855,84 @@ export default function App() {
             if (quiet) return; // Don't prompt on background timer
             const granted = await handleWithPerm.requestPermission?.({ mode: 'read' });
             if (granted !== 'granted') {
+              const completedAt = Date.now();
+              appendScanLog({
+                id: crypto.randomUUID(),
+                startedAt,
+                completedAt,
+                durationMs: Math.max(1, completedAt - startedAt),
+                source,
+                folderName: handle.name,
+                totalFilesEncountered: 0,
+                audioFilesProcessed: 0,
+                addedCount: 0,
+                updatedCount: 0,
+                restoredCount: 0,
+                missingCount: 0,
+                skippedNonAudioCount: 0,
+                status: 'failed',
+                errors: [
+                  {
+                    path: handle.name,
+                    message: 'Folder read permission was not granted by the browser.',
+                    code: 'permission',
+                  },
+                ],
+              });
               setScanNotice('Folder read permission was not granted.');
               return;
             }
           }
         }
 
-        const entries = await walkDirectoryHandle(handle);
-        await ingestAudioEntries(entries, {
+        setIsScanning(true);
+        const report = await walkDirectoryHandleWithReport(handle);
+        await ingestAudioEntries(report.entries, {
           folderRootName: handle.name,
           isFullFolderScan: true,
           quiet,
+          source,
+          startedAt,
+          totalEncountered: report.totalFilesEncountered,
+          walkErrors: report.errors,
         });
-      } catch {
+      } catch (err) {
+        const completedAt = Date.now();
+        const message =
+          err instanceof Error && err.message
+            ? err.message
+            : 'Could not re-scan the mounted folder. Select the folder again to refresh.';
+        appendScanLog({
+          id: crypto.randomUUID(),
+          startedAt,
+          completedAt,
+          durationMs: Math.max(1, completedAt - startedAt),
+          source,
+          folderName: handle.name,
+          totalFilesEncountered: 0,
+          audioFilesProcessed: 0,
+          addedCount: 0,
+          updatedCount: 0,
+          restoredCount: 0,
+          missingCount: 0,
+          skippedNonAudioCount: 0,
+          status: 'failed',
+          errors: [
+            {
+              path: handle.name,
+              message,
+              code: 'unknown',
+            },
+          ],
+        });
         if (!quiet) {
           setScanNotice('Could not re-scan the mounted folder. Select the folder again to refresh.');
         }
+      } finally {
+        setIsScanning(false);
       }
     },
-    [ingestAudioEntries]
+    [appendScanLog, ingestAudioEntries]
   );
 
   // Auto-watch interval effect when a live directory handle is active
@@ -774,14 +964,24 @@ export default function App() {
           }
         ).showDirectoryPicker;
         const handle = await picker({ mode: 'read' });
+        const startedAt = Date.now();
         dirHandleRef.current = handle;
         setHasLiveHandle(true);
         await saveDirectoryHandle(handle);
-        const entries = await walkDirectoryHandle(handle);
-        await ingestAudioEntries(entries, {
-          folderRootName: handle.name,
-          isFullFolderScan: true,
-        });
+        setIsScanning(true);
+        try {
+          const report = await walkDirectoryHandleWithReport(handle);
+          await ingestAudioEntries(report.entries, {
+            folderRootName: handle.name,
+            isFullFolderScan: true,
+            source: 'manual-folder',
+            startedAt,
+            totalEncountered: report.totalFilesEncountered,
+            walkErrors: report.errors,
+          });
+        } finally {
+          setIsScanning(false);
+        }
       } catch (err: unknown) {
         const domErr = err as { name?: string };
         if (domErr?.name === 'AbortError') {
@@ -793,6 +993,7 @@ export default function App() {
   };
 
   const handleFolderInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const startedAt = Date.now();
     const files = Array.from(e.target.files ?? []);
     e.target.value = '';
     if (files.length === 0) return;
@@ -810,25 +1011,39 @@ export default function App() {
     await ingestAudioEntries(entries, {
       folderRootName,
       isFullFolderScan: Boolean(firstPath),
+      source: 'manual-folder',
+      startedAt,
+      totalEncountered: files.length,
     });
   };
 
   const handleFilesInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const startedAt = Date.now();
     const files = Array.from(e.target.files ?? []);
     e.target.value = '';
     if (files.length === 0) return;
     await ingestAudioEntries(
       files.map((file) => ({ file, relativePath: file.name })),
-      { isFullFolderScan: false }
+      {
+        isFullFolderScan: false,
+        source: 'file-picker',
+        startedAt,
+        totalEncountered: files.length,
+      }
     );
   };
 
   const handleDropTransfer = async (dataTransfer: DataTransfer) => {
-    const { entries, folderRootName } = await extractDroppedEntries(dataTransfer);
-    if (entries.length === 0) return;
+    const startedAt = Date.now();
+    const { entries, folderRootName, errors } = await extractDroppedEntries(dataTransfer);
+    if (entries.length === 0 && errors.length === 0) return;
     await ingestAudioEntries(entries, {
       folderRootName,
       isFullFolderScan: Boolean(folderRootName),
+      source: 'drag-drop',
+      startedAt,
+      totalEncountered: entries.length + errors.length,
+      walkErrors: errors,
     });
   };
 
@@ -2224,6 +2439,13 @@ export default function App() {
       );
     } else if (pendingConfirm.kind === 'apply-sync') {
       executeApplySync(pendingConfirm.playlistId);
+    } else if (pendingConfirm.kind === 'clear-scan-logs') {
+      setScanLogs([]);
+      pushToast({
+        title: 'Scan history cleared',
+        description: 'All recorded file system scan logs have been removed.',
+        tone: 'neutral',
+      });
     }
 
     setPendingConfirm(null);
@@ -2297,6 +2519,7 @@ export default function App() {
       return { section: 'Smart Playlists', sub: activeSmartPlaylist.name };
     }
     if (activeView === 'sync') return { section: 'Sync Queue' };
+    if (activeView === 'scan-logs') return { section: 'Scan Logs' };
     if (activeView === 'transfer') return { section: 'Drive Sync & Transfer' };
     return { section: 'Device Storage' };
   }, [activeView, activePlaylist, activeSmartPlaylist]);
@@ -2334,6 +2557,8 @@ export default function App() {
         diffMap={diffMap}
         totalLocalTracks={tracks.length}
         totalPendingSyncs={totalPendingSyncs}
+        scanLogsCount={scanLogs.length}
+        scanErrorCount={totalScanErrorCount}
         watchedFolder={watchedFolder}
         isScanning={isScanning}
         mobileOpen={mobileMenuOpen}
@@ -2374,9 +2599,19 @@ export default function App() {
           sectionLabel={breadcrumb.section}
           subLabel={breadcrumb.sub}
           isScanning={isScanning}
+          watcherStatus={watcherStatus}
+          watchedFolderName={watchedFolder?.name ?? null}
+          autoWatchIntervalSec={autoWatchIntervalSec}
+          scanProgress={scanProgress}
+          recentScanErrorCount={recentScanErrorCount}
           pendingSyncCount={totalPendingSyncs}
           onOpenMobileMenu={() => setMobileMenuOpen(true)}
           onOpenSmartSearch={() => setSmartSearchOpen(true)}
+          onOpenScanLogs={() => {
+            setActiveView('scan-logs');
+            setActivePlaylistId(null);
+            setActiveSmartPlaylistId(null);
+          }}
           onPickFolder={handleMountFolder}
           onPickFiles={() => filesInputRef.current?.click()}
           onOpenSyncQueue={() => {
@@ -2641,6 +2876,21 @@ export default function App() {
           />
         )}
 
+        {activeView === 'scan-logs' && (
+          <ScanLogView
+            scanLogs={scanLogs}
+            watcherStatus={watcherStatus}
+            watchedFolder={watchedFolder}
+            autoWatchIntervalSec={autoWatchIntervalSec}
+            isScanning={isScanning}
+            scanProgress={scanProgress}
+            onChangeAutoWatch={setAutoWatchIntervalSec}
+            onRescanFolder={() => handleRescanWatchedFolder(false)}
+            onMountFolder={handleMountFolder}
+            onRequestClearLogs={() => setPendingConfirm({ kind: 'clear-scan-logs' })}
+          />
+        )}
+
         {activeView === 'transfer' && (
           <TransferView
             tracks={tracks}
@@ -2678,6 +2928,7 @@ export default function App() {
               ingestAudioEntries(entries, {
                 folderRootName,
                 isFullFolderScan: false,
+                source: 'drive-mapping',
               })
             }
             onNotify={(payload) =>
@@ -2819,7 +3070,9 @@ export default function App() {
                   ? `Remove ${pendingConfirm.trackIds.length} redundant duplicate${pendingConfirm.trackIds.length === 1 ? '' : 's'}?`
                   : pendingConfirm?.kind === 'apply-sync'
                     ? `Apply sync changes to "${pendingConfirm.name}"?`
-                    : ''
+                    : pendingConfirm?.kind === 'clear-scan-logs'
+                      ? 'Clear all scan logs?'
+                      : ''
         }
         message={
           pendingConfirm?.kind === 'delete-playlist'
@@ -2832,14 +3085,18 @@ export default function App() {
                   ? 'This removes the redundant duplicate copies from your CrateSync library and automatically remaps any affected playlists to keep the primary copy. Original files on your device are not deleted.'
                   : pendingConfirm?.kind === 'apply-sync'
                     ? `This will add ${pendingConfirm.addCount} track(s) and remove ${pendingConfirm.removeCount} track(s) from the synced playlist snapshot.`
-                    : ''
+                    : pendingConfirm?.kind === 'clear-scan-logs'
+                      ? 'This clears the recorded history of local file system scans and error diagnostics from CrateSync. Your audio library and playlists are not affected.'
+                      : ''
         }
         confirmLabel={
           pendingConfirm?.kind === 'apply-sync'
             ? 'Apply Sync'
             : pendingConfirm?.kind === 'remove-duplicates'
               ? 'Remove Duplicates'
-              : 'Confirm Removal'
+              : pendingConfirm?.kind === 'clear-scan-logs'
+                ? 'Clear Logs'
+                : 'Confirm Removal'
         }
         destructive={pendingConfirm?.kind !== 'apply-sync'}
         onCancel={() => setPendingConfirm(null)}

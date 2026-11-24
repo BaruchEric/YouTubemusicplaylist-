@@ -2,6 +2,7 @@ import type {
   DriveFolderMapping,
   LocalTrack,
   Playlist,
+  ScanLogEntry,
   SmartPlaylist,
   SyncDeviceProfile,
   SyncEvent,
@@ -21,6 +22,7 @@ export interface PersistedLibraryState {
   playlists: Playlist[];
   smartPlaylists: SmartPlaylist[];
   syncHistory: SyncEvent[];
+  scanLogs?: ScanLogEntry[];
   watchedFolderName: string | null;
   lastScannedAt: number | null;
   devices?: SyncDeviceProfile[];
@@ -32,6 +34,7 @@ const DEFAULT_STATE: PersistedLibraryState = {
   playlists: [],
   smartPlaylists: [],
   syncHistory: [],
+  scanLogs: [],
   watchedFolderName: null,
   lastScannedAt: null,
   devices: [],

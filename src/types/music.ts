@@ -172,7 +172,50 @@ export type WorkspaceView =
   | 'playlist'
   | 'smart-playlist'
   | 'sync'
+  | 'scan-logs'
   | 'transfer';
+
+export type DirectoryWatcherStatus = 'watching' | 'syncing' | 'idle';
+
+export type ScanTriggerSource =
+  | 'manual-folder'
+  | 'background-watch'
+  | 'file-picker'
+  | 'drag-drop'
+  | 'drive-mapping';
+
+export type ScanErrorCode =
+  | 'permission'
+  | 'unreadable-file'
+  | 'inaccessible-folder'
+  | 'metadata-parse'
+  | 'unknown';
+
+export interface ScanErrorEntry {
+  path: string;
+  message: string;
+  code: ScanErrorCode;
+}
+
+export type ScanLogStatus = 'completed' | 'completed-with-errors' | 'failed';
+
+export interface ScanLogEntry {
+  id: string;
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  source: ScanTriggerSource;
+  folderName: string;
+  totalFilesEncountered: number;
+  audioFilesProcessed: number;
+  addedCount: number;
+  updatedCount: number;
+  restoredCount: number;
+  missingCount: number;
+  skippedNonAudioCount: number;
+  status: ScanLogStatus;
+  errors: ScanErrorEntry[];
+}
 
 export interface WatchedFolderInfo {
   name: string;
