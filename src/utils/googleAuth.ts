@@ -27,8 +27,8 @@ const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
  * app, attested by the reCAPTCHA Enterprise site key in firebase-applet-config.json. It needs
  * a browser (reCAPTCHA loads a script), and it is skipped when the key is empty. Calling it
  * again with the same key, as a hot reload does, returns the instance already running.
- * The Firebase project does not enforce App Check yet, so until it does these tokens only
- * show up in its App Check metrics.
+ * The Firebase project enforces App Check for Authentication (since 2026-11-24), so without
+ * this token Google sign-in fails with "Firebase App Check token is invalid".
  */
 export const appCheck: AppCheck | null = startAppCheck(app, firebaseConfig.recaptchaSiteKey);
 

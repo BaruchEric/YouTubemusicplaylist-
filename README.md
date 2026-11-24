@@ -79,7 +79,7 @@ cp .env.example .env
 | `PORT` | Optional | Server port (defaults to `3000`). |
 | `DISABLE_HMR` | Optional | Set to `true` to disable Vite HMR and file watching. |
 
-> **Google Drive OAuth**: Firebase and Google OAuth client configuration is loaded from [`firebase-applet-config.json`](firebase-applet-config.json). Google sign-in works only from an origin the Firebase project knows in three places: Auth's authorized domains (Authentication, Settings, Authorized domains), the HTTP referrers allowed on the browser API key in `apiKey`, and the domains of the reCAPTCHA Enterprise key in `recaptchaSiteKey`, which Firebase App Check uses. The key allows `localhost` on ports 3000 to 3002 and the AI Studio preview hosts, so a local server works at `http://localhost:3000`. To serve from anywhere else, add the origin in all three places.
+> **Google Drive OAuth**: Firebase and Google OAuth client configuration is loaded from [`firebase-applet-config.json`](firebase-applet-config.json). Google sign-in works only from an origin the Firebase project knows in three places: Auth's authorized domains (Authentication, Settings, Authorized domains), the HTTP referrers allowed on the browser API key in `apiKey`, and the domains of the reCAPTCHA Enterprise key in `recaptchaSiteKey`, which Firebase App Check uses. App Check is enforced for Authentication, so an origin missing from the reCAPTCHA key cannot sign in. The key allows `localhost` on ports 3000 to 3002 and the AI Studio preview hosts, so a local server works at `http://localhost:3000`. To serve from anywhere else, add the origin in all three places.
 
 ### Running the App
 
