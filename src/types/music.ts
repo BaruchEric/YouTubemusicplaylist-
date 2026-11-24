@@ -240,6 +240,23 @@ export interface DeviceFolderBinding {
   syncDirection: FolderSyncDirection;
   autoCacheOffline: boolean;
   lastSyncedAt: number | null;
+  /**
+   * When this binding was last created or edited (ms). Marking it synced leaves this alone.
+   * A tombstone removes the binding only if the binding is not newer than the tombstone.
+   * Bindings saved before this field existed count as 0.
+   */
+  updatedAt?: number;
+}
+
+/**
+ * Records a deleted folder mapping, or one device's removed binding, so that merging an older
+ * copy from Drive or another device does not bring it back.
+ */
+export interface FolderMappingTombstone {
+  driveFolderId: string;
+  /** The device whose binding was removed. Absent when the whole mapping was deleted. */
+  deviceId?: string;
+  deletedAt: number;
 }
 
 export interface DriveFolderMapping {

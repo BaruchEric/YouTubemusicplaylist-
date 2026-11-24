@@ -10,6 +10,7 @@ import type {
   SyncEvent,
 } from '../types/music';
 import type { CrateSyncLibraryBackupPayload, DriveFileItem } from '../utils/googleDriveApi';
+import type { ManifestFolderState } from '../utils/folderMappings';
 import type { ScannedFileEntry } from '../utils/syncEngine';
 import {
   buildInstantQueueBatches,
@@ -47,6 +48,13 @@ interface TransferViewProps {
   onUnbindDeviceFromMapping: (mappingId: string, deviceId: string) => void;
   onDeleteFolderMapping: (mappingId: string) => void;
   onMarkMappingSynced: (mappingId: string, deviceId: string) => void;
+  /**
+   * Merges a downloaded Drive manifest's devices and folder mappings into this device (or,
+   * given null, changes nothing) and returns the state a push should write to the manifest.
+   */
+  onPrepareFolderStateForManifest: (
+    remote: CrateSyncLibraryBackupPayload | null
+  ) => ManifestFolderState;
   onImportPlaylist: (name: string, seeds: ImportedTrackSeed[]) => void;
   onRestoreLibraryBackup: (
     backup: CrateSyncLibraryBackupPayload,
@@ -97,6 +105,7 @@ export function TransferView({
   onUnbindDeviceFromMapping,
   onDeleteFolderMapping,
   onMarkMappingSynced,
+  onPrepareFolderStateForManifest,
   onImportPlaylist,
   onRestoreLibraryBackup,
   onSyncFromDriveSourceOfTruth,
@@ -206,6 +215,7 @@ export function TransferView({
           onUnbindDeviceFromMapping={onUnbindDeviceFromMapping}
           onDeleteFolderMapping={onDeleteFolderMapping}
           onMarkMappingSynced={onMarkMappingSynced}
+          onPrepareFolderStateForManifest={onPrepareFolderStateForManifest}
           onImportPlaylist={onImportPlaylist}
           onRestoreLibraryBackup={onRestoreLibraryBackup}
           onSyncFromDriveSourceOfTruth={onSyncFromDriveSourceOfTruth}

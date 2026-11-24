@@ -1,4 +1,5 @@
 import type { LocalTrack } from '../types/music';
+import { postAiRequest } from './aiApi';
 
 export interface DeepGenreClassificationItem {
   trackId: string;
@@ -54,20 +55,11 @@ export async function classifyTracksDeeply(
       })),
     };
 
-    const res = await fetch('/api/genres/classify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    const data = (await res.json().catch(() => ({}))) as {
-      classifications?: DeepGenreClassificationItem[];
-      error?: string;
-    };
-
-    if (!res.ok) {
-      throw new Error(data.error || `Genre classification failed (HTTP ${res.status}).`);
-    }
+    const data = await postAiRequest<{ classifications: DeepGenreClassificationItem[] }>(
+      '/api/genres/classify',
+      payload,
+      { fallbackError: (status) => `Genre classification failed (HTTP ${status}).` }
+    );
 
     const items = Array.isArray(data.classifications) ? data.classifications : [];
     for (const item of items) {

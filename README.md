@@ -20,8 +20,8 @@
 ### Multi-Device Google Drive Sync
 - **Google Drive as Source of Truth**: Sign in with Google via Firebase Auth using least-privilege Drive OAuth scopes (`drive.readonly` and `drive.file`, with access tokens held strictly in memory).
 - **Canonical Library Manifest**: Back up and synchronize tracks, playlists, smart playlists, sync history, device registries, and folder mappings via `cratesync-source-of-truth.json` inside the `CrateSync Library` Drive folder.
-- **Cross-Device Folder Mappings**: Register each playing device (`SyncDeviceProfile`) and bind Google Drive folders to device-specific local folder paths (`DriveFolderMapping`) with configurable sync directions (`pull`, `push`, `bidirectional`) and optional offline audio caching.
-- **Resilient Drive API Client**: Automatic exponential backoff retries for transient rate limits (`429` / `userRateLimitExceeded`) and `5xx` errors.
+- **Cross-Device Folder Mappings**: Register each playing device (`SyncDeviceProfile`) and bind Google Drive folders to device-specific local folder paths (`DriveFolderMapping`) with configurable sync directions (`pull`, `push`, `bidirectional`) and optional offline audio caching. Deleting a mapping or unbinding a device writes a tombstone to the manifest, so the deletion reaches every device instead of coming back on the next merge. Each push reads the current manifest and merges its devices, mappings and tombstones before writing.
+- **Resilient Drive API Client**: Automatic exponential backoff retries for transient rate limits (`429` / `userRateLimitExceeded`) and `5xx` errors. Files over 5 MB (large audio files and big library manifests) go up as resumable uploads, which pick up after a dropped connection.
 
 ### Audio Playback Engine
 - **Dual-Deck Crossfade & Gapless Playback**: Configurable crossfade duration (`0–12s`, `0.5s` precision), curves (`equal-power`, `smooth-s`, `linear`), manual-skip crossfade toggle, gapless preloading, and gapless album continuity.
@@ -73,6 +73,8 @@ cp .env.example .env
 | Variable | Required | Description |
 | --- | --- | --- |
 | `GEMINI_API_KEY` | Optional | Enables `/api/metadata/suggest` and `/api/genres/classify`. Without it, all local library, playback, YouTube matching, and Google Drive features still work. |
+| `GEMINI_ALLOWED_EMAILS` | Optional | Comma-separated Google accounts allowed to use the AI endpoints. When unset, any Google account that signs in to the app can use them, within the rate limit. Set it on any server reachable from the internet. |
+| `BIND_HOST` | Optional | Address the server listens on (defaults to `0.0.0.0`). Set `127.0.0.1` to keep a local server off the network. |
 | `APP_URL` | Optional | Public URL of the hosted app (used for self-referential links / OAuth contexts). |
 | `PORT` | Optional | Server port (defaults to `3000`). |
 | `DISABLE_HMR` | Optional | Set to `true` to disable Vite HMR and file watching. |
@@ -104,29 +106,34 @@ npm start
 | `start` | `NODE_ENV=production node server.ts` | Runs the production server, serving `dist/` (run `build` first) |
 | `preview` | `vite preview` | Previews the static Vite production build |
 | `lint` | `tsc --noEmit` | Runs strict TypeScript type-checking |
+| `test` | `bun test` | Runs the unit tests in `tests/` (AI endpoint sign-in check, folder mapping merges, Drive uploads) |
 | `clean` | `rm -rf dist server.js` | Removes build artifacts |
 
 ## Backend API
 
 All API routes are implemented in [`server.ts`](server.ts) and accept JSON payloads up to `1mb`.
 
+Every `/api` request needs an `Authorization: Bearer` header carrying a Firebase ID token from a Google sign-in to this app's Firebase project. The client sends it automatically once the user has signed in with Google on the Drive Sync & Transfer page; signed out, AI lookups show a "Sign in with Google" error. [`server/aiAccess.ts`](server/aiAccess.ts) verifies the token against Google's published keys, rejects anonymous sign-ins, applies `GEMINI_ALLOWED_EMAILS` when set, and allows each account 240 requests per 10 minutes with at most 2 in flight. The client waits out a `429` using its `Retry-After` header and tries again, up to three times.
+
 ### `POST /api/metadata/suggest`
 Cross-references local audio tracks via Gemini + Google Search grounding to suggest verified metadata.
 - **Body**: `{ "tracks": TrackLookupInput[] }` (`1–25` tracks per request)
 - **Response**: `{ "suggestions": MetadataSuggestion[], "sources": SearchSource[] }`
-- **Errors**: `400` (invalid batch size), `503` (missing `GEMINI_API_KEY`), `403`/`429`/`500`
+- **Errors**: `401` (no valid sign-in), `403` (account not on the allowlist, or Gemini rejected the key), `400` (invalid batch size), `429` (rate limit, with `Retry-After`), `503` (missing `GEMINI_API_KEY`), `500`
 
 ### `POST /api/genres/classify`
 Classifies tracks into canonical primary genres and subgenres.
 - **Body**: `{ "tracks": GenreClassifyInput[] }` (`1–60` tracks per request)
 - **Response**: `{ "classifications": DeepGenreClassificationItem[] }`
-- **Errors**: `400` (invalid batch size), `503` (missing `GEMINI_API_KEY`), `403`/`429`/`500`
+- **Errors**: same as `/api/metadata/suggest`
 
 ## Project Structure
 
 ```text
 .
 ├── server.ts                    # Express server, Vite middleware, Gemini API routes
+├── server/aiAccess.ts           # Sign-in check and rate limit for the Gemini routes
+├── tests/                       # bun test unit tests
 ├── index.html                   # App shell & typography
 ├── metadata.json                # AI Studio applet metadata
 ├── firebase-applet-config.json  # Firebase & Google OAuth client configuration

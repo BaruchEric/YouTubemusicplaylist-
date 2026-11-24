@@ -30,7 +30,8 @@ All primary domain interfaces are defined in [`src/types/music.ts`](../src/types
 - **`SmartPlaylist`**: Rule-based dynamic playlist (`matchMode: 'all' | 'any'`, `rules`, `sortBy`, `sortDir`, `excludeMissing`).
 - **`SyncEvent`**: Audit log record for applied playlist syncs.
 - **`SyncDeviceProfile`**: Persistent playing-device identity (`id`, `name`, `platform`, `lastSeenAt`).
-- **`DriveFolderMapping`** & **`DeviceFolderBinding`**: Maps a Google Drive folder (`driveFolderId`, `driveFolderName`) to per-device local folder bindings keyed by `SyncDeviceProfile.id`, storing `localFolderPath`, `syncDirection` (`pull | push | bidirectional`), `autoCacheOffline`, and `lastSyncedAt`.
+- **`DriveFolderMapping`** & **`DeviceFolderBinding`**: Maps a Google Drive folder (`driveFolderId`, `driveFolderName`) to per-device local folder bindings keyed by `SyncDeviceProfile.id`, storing `localFolderPath`, `syncDirection` (`pull | push | bidirectional`), `autoCacheOffline`, `lastSyncedAt`, and `updatedAt` (set when the binding is saved, not when it syncs).
+- **`FolderMappingTombstone`**: Records a deleted mapping (`driveFolderId`, `deletedAt`) or one device's removed binding (adds `deviceId`), so merges do not restore it.
 
 ## Client-Side Persistence
 
@@ -40,7 +41,7 @@ Managed in [`src/utils/storage.ts`](../src/utils/storage.ts) with three object s
 
 | Store | Key | Purpose |
 | --- | --- | --- |
-| `app_state` | `'main'` | Persists `tracks`, `playlists`, `smartPlaylists`, `syncHistory`, `watchedFolderName`, `lastScannedAt`, `devices`, and `folderMappings` (falls back to `localStorage` key `cratesync_library_v1` if IndexedDB is unavailable). |
+| `app_state` | `'main'` | Persists `tracks`, `playlists`, `smartPlaylists`, `syncHistory`, `watchedFolderName`, `lastScannedAt`, `devices`, `folderMappings`, and `folderMappingTombstones` (falls back to `localStorage` key `cratesync_library_v1` if IndexedDB is unavailable). |
 | `dir_handles` | `'watched_root'` | Stores the mounted `FileSystemDirectoryHandle` so auto-watch and re-scans survive page reloads. |
 | `audio_blobs` | `track.fileKey` | Caches local and Drive-downloaded audio `Blob` objects for offline playback and reload persistence. |
 
@@ -66,12 +67,12 @@ Implemented across [`src/utils/googleAuth.ts`](../src/utils/googleAuth.ts), [`sr
 1. **Authentication**: Uses Firebase Auth `signInWithPopup` with `GoogleAuthProvider` requesting two least-privilege scopes:
    - `https://www.googleapis.com/auth/drive.readonly` (browse, search, download audio and playlist files)
    - `https://www.googleapis.com/auth/drive.file` (create/update CrateSync backups and uploaded audio)
-2. **Canonical Manifest**: Stored as `cratesync-source-of-truth.json` (`schemaVersion: 1`) inside the `CrateSync Library` Drive folder. Contains tracks, playlists, smart playlists, sync history, `devices`, and `folderMappings`.
+2. **Canonical Manifest**: Stored as `cratesync-source-of-truth.json` (`schemaVersion: 1`) inside the `CrateSync Library` Drive folder. Contains tracks, playlists, smart playlists, sync history, `devices`, `folderMappings`, and `folderMappingTombstones` (optional; manifests written before it existed parse with none). Both push paths download the current manifest and merge its devices, mappings and tombstones into the local state before writing, so a device that had not pulled cannot erase other devices' bindings or deletions. Uploads of 5 MB or less use one multipart request; larger files, including big manifests, use a resumable upload that resumes from the byte the session reports after a dropped connection, or starts a fresh session when that count is unreadable.
 3. **Path Translation & Folder Bindings**:
    - Paths are normalized across Windows/macOS/Linux/mobile (`normalizeFolderPath`).
    - When pushing local audio, `resolveDriveMappingForLocalTrack` selects the most specific `push` or `bidirectional` mapping for the current device.
    - When pulling from Drive, `resolveLocalBindingForDriveFolder` and `translateRelativePathForDevice` project remote files onto the current device's local folder structure (or IndexedDB-only cache when unbound).
-   - `mergeDeviceProfiles` and `mergeFolderMappings` merge registries across devices while preserving each device's independent local bindings.
+   - `mergeDeviceProfiles` and `mergeFolderMappingState` merge registries across devices while preserving each device's independent local bindings. `mergeFolderMappingState` unions tombstones (latest per mapping or binding, dropped after 365 days), merges mappings, then removes every binding whose `updatedAt` is not newer than a tombstone covering it, and every mapping left without bindings. Comparing the binding's `updatedAt` rather than the mapping's means a stale device marking a sync cannot bring a deleted mapping back, while a binding saved after the deletion survives.
 4. **On-Demand Streaming & Tag Enrichment**: When playing a Drive-synced stub that is not yet cached locally, `useAudioPlayer` fetches the audio blob from Drive, stores it in `audio_blobs`, and triggers `extractLocalTrack` in [`src/App.tsx`](../src/App.tsx) to populate embedded ID3/FLAC/MP4 tags, cover art, duration, and `contentHash`.
 
 ## Audio Playback Pipeline
@@ -85,8 +86,9 @@ Managed by [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts), [`sr
 
 ## Server Architecture
 
-[`server.ts`](../server.ts) runs a single Express HTTP server on `0.0.0.0:${PORT || 3000}`:
+[`server.ts`](../server.ts) runs a single Express HTTP server on `${BIND_HOST || '0.0.0.0'}:${PORT || 3000}`:
 
+- **AI endpoint access**: [`server/aiAccess.ts`](../server/aiAccess.ts) guards every `/api` route before the body is parsed. It verifies a Firebase ID token (`Authorization: Bearer`) with `jose` against Google's securetoken keys, with issuer and audience bound to the `projectId` in `firebase-applet-config.json`, and accepts only Google sign-ins. `GEMINI_ALLOWED_EMAILS`, when set, limits use to those verified emails. Each account gets 240 requests per 10 minutes and 2 in flight; over that it answers `429` with `Retry-After`. The client side is [`src/utils/aiApi.ts`](../src/utils/aiApi.ts), which waits for Firebase to restore the session, attaches the token, and retries a `429` up to three times.
 - **Development (`NODE_ENV !== 'production'`)**: Attaches Vite in middleware mode (`appType: 'spa'`) for live module serving and HMR.
 - **Production (`NODE_ENV === 'production'`)**: Serves static files from `dist/` with an SPA fallback to `dist/index.html`.
 - **AI Endpoints**:
@@ -105,15 +107,16 @@ Managed by [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts), [`sr
 | `smartShuffle.ts` | Weighted shuffle scoring based on YouTube match quality, metadata completeness, and audio fidelity |
 | `syncEngine.ts` | Directory walking, drag-and-drop entry traversal, playlist diff computation |
 | `storage.ts` | IndexedDB (`CrateSyncDB`) wrapper for library state, directory handles, and audio blobs |
-| `googleAuth.ts` | Firebase Google OAuth sign-in/out and in-memory Drive token management |
-| `googleDriveApi.ts` | Google Drive v3 client (folder scanning, uploads, downloads, manifest I/O, retry/backoff) |
-| `folderMappings.ts` | Device profiles, cross-platform path normalization, Drive-to-local binding resolution & merging |
+| `googleAuth.ts` | Firebase Google OAuth sign-in/out, in-memory Drive token management, Firebase ID tokens for the AI endpoints |
+| `googleDriveApi.ts` | Google Drive v3 client (folder scanning, multipart and resumable uploads, downloads, manifest I/O, retry/backoff) |
+| `folderMappings.ts` | Device profiles, cross-platform path normalization, Drive-to-local binding resolution, merging & tombstones |
 | `youtubeLinks.ts` | YouTube ID/playlist URL extraction, queue batch builders, M3U8/CSV/JSON/TXT import & export |
 | `smartPlaylists.ts` | Smart Playlist rule definitions, field metadata, and evaluation/sorting engine |
 | `smartSearch.ts` | Global search tokenizer, query operator parser, and scored track/album/genre/playlist matching |
 | `dashboardSmartFilters.ts` | Dashboard quick criteria, custom rule evaluation, and saved filter storage |
 | `duplicateDetector.ts` | Exact hash+size and size-only duplicate grouping with keep-candidate scoring |
 | `genreInference.ts` | Local genre tag normalization, ID3v1 genre lookup, heuristic inference, and track statistics |
+| `aiApi.ts` | Authenticated POST helper for the Gemini endpoints (Firebase ID token, `429` retry) |
 | `genreClassifier.ts` | Client batch wrapper for `POST /api/genres/classify` |
 | `metadataLookup.ts` | Client batch wrapper for `POST /api/metadata/suggest` |
 | `recommendations.ts` | Genre-profile and genre-adjacency track recommendations |

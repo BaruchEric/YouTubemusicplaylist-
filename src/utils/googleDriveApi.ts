@@ -1,11 +1,13 @@
 import type {
   DriveFolderMapping,
+  FolderMappingTombstone,
   LocalTrack,
   Playlist,
   SmartPlaylist,
   SyncDeviceProfile,
   SyncEvent,
 } from '../types/music';
+import { mergeFolderMappingTombstones } from './folderMappings';
 
 const DRIVE_FILES_ENDPOINT = 'https://www.googleapis.com/drive/v3/files';
 const DRIVE_UPLOAD_ENDPOINT = 'https://www.googleapis.com/upload/drive/v3/files';
@@ -97,6 +99,8 @@ export interface CrateSyncLibraryBackupPayload {
   syncHistory: SyncEvent[];
   devices?: SyncDeviceProfile[];
   folderMappings?: DriveFolderMapping[];
+  /** Deleted mappings and removed bindings, so merges on other devices do not restore them. */
+  folderMappingTombstones?: FolderMappingTombstone[];
 }
 
 async function parseDriveError(res: Response, fallbackMessage: string): Promise<DriveApiError> {
@@ -202,6 +206,7 @@ export function buildLibraryBackupPayload(params: {
   driveMusicFolderName?: string | null;
   devices?: SyncDeviceProfile[];
   folderMappings?: DriveFolderMapping[];
+  folderMappingTombstones?: FolderMappingTombstone[];
 }): CrateSyncLibraryBackupPayload {
   const portableTracks: LocalTrack[] = params.tracks.map((track) => ({
     ...track,
@@ -237,6 +242,7 @@ export function buildLibraryBackupPayload(params: {
     syncHistory: params.syncHistory.slice(0, 50),
     devices: params.devices ?? [],
     folderMappings: params.folderMappings ?? [],
+    folderMappingTombstones: params.folderMappingTombstones ?? [],
   };
 }
 
@@ -1255,8 +1261,8 @@ export async function downloadDriveAudioBlob(
 }
 
 /**
- * Uploads a binary audio file (song) to Google Drive using multipart/related binary upload,
- * preserving exact file bytes so every synced device plays the authentic source audio.
+ * Uploads a binary audio file (song) to Google Drive, preserving exact file bytes so every
+ * synced device plays the authentic source audio. Files over 5 MB go up as resumable uploads.
  */
 export async function uploadAudioFileToDrive(
   accessToken: string,
@@ -1264,7 +1270,6 @@ export async function uploadAudioFileToDrive(
   fileName: string,
   options?: { folderId?: string | null; trackId?: string }
 ): Promise<DriveFileItem> {
-  const boundary = `cratesync_audio_${crypto.randomUUID().replace(/-/g, '')}`;
   const mimeType =
     blob.type && blob.type.startsWith('audio/') ? blob.type : inferAudioMimeFromName(fileName);
 
@@ -1281,40 +1286,203 @@ export async function uploadAudioFileToDrive(
     metadata.parents = [options.folderId];
   }
 
+  return uploadFileContentToDrive({
+    accessToken,
+    metadata,
+    content: blob,
+    contentType: mimeType,
+    fields: 'id,name,mimeType,size,modifiedTime,webViewLink,parents,md5Checksum,appProperties',
+    errorMessage: `Failed to upload "${fileName}" to Google Drive.`,
+  });
+}
+
+// Google documents multipart upload for files of 5 MB or less and resumable upload for larger
+// ones. Resumable also lets a dropped connection pick up where it stopped.
+export const RESUMABLE_UPLOAD_THRESHOLD_BYTES = 5 * 1024 * 1024;
+const RESUMABLE_MAX_ATTEMPTS = 4;
+
+interface DriveUploadParams {
+  accessToken: string;
+  metadata: Record<string, unknown>;
+  content: Blob;
+  /** Content-Type of the file bytes, e.g. "audio/flac" or "application/json; charset=UTF-8". */
+  contentType: string;
+  /** Update this file in place (PATCH) instead of creating a new one. */
+  existingFileId?: string | null;
+  fields: string;
+  errorMessage: string;
+}
+
+function uploadUrl(uploadType: 'multipart' | 'resumable', params: DriveUploadParams): string {
+  const query = `uploadType=${uploadType}&fields=${encodeURIComponent(params.fields)}`;
+  return params.existingFileId
+    ? `${DRIVE_UPLOAD_ENDPOINT}/${encodeURIComponent(params.existingFileId)}?${query}`
+    : `${DRIVE_UPLOAD_ENDPOINT}?${query}`;
+}
+
+/**
+ * Creates or updates a Drive file with metadata and content: one multipart request up to
+ * 5 MB, a resumable upload above that.
+ */
+export async function uploadFileContentToDrive(params: DriveUploadParams): Promise<DriveFileItem> {
+  if (params.content.size <= RESUMABLE_UPLOAD_THRESHOLD_BYTES) {
+    return uploadMultipart(params);
+  }
+  return uploadResumable(params);
+}
+
+async function uploadMultipart(params: DriveUploadParams): Promise<DriveFileItem> {
+  const boundary = `cratesync_${crypto.randomUUID().replace(/-/g, '')}`;
   const preamble = [
     `--${boundary}`,
     'Content-Type: application/json; charset=UTF-8',
     '',
-    JSON.stringify(metadata),
+    JSON.stringify(params.metadata),
     `--${boundary}`,
-    `Content-Type: ${mimeType}`,
+    `Content-Type: ${params.contentType}`,
     '',
     '',
   ].join('\r\n');
+  const body = new Blob([preamble, params.content, `\r\n--${boundary}--`]);
 
-  const epilogue = `\r\n--${boundary}--`;
-  const multipartBlob = new Blob([preamble, blob, epilogue], {
-    type: `multipart/related; boundary=${boundary}`,
+  const res = await fetch(uploadUrl('multipart', params), {
+    method: params.existingFileId ? 'PATCH' : 'POST',
+    headers: {
+      Authorization: `Bearer ${params.accessToken}`,
+      'Content-Type': `multipart/related; boundary=${boundary}`,
+    },
+    body,
   });
 
-  const res = await fetch(
-    `${DRIVE_UPLOAD_ENDPOINT}?uploadType=multipart&fields=id,name,mimeType,size,modifiedTime,webViewLink,parents,md5Checksum,appProperties`,
+  if (!res.ok) {
+    throw await parseDriveError(res, params.errorMessage);
+  }
+  return normalizeDriveFile((await res.json()) as Record<string, unknown>);
+}
+
+async function startResumableSession(params: DriveUploadParams): Promise<string> {
+  const initUrl = uploadUrl('resumable', params);
+  const res = await driveFetchWithRetry(
+    initUrl,
     {
-      method: 'POST',
+      method: params.existingFileId ? 'PATCH' : 'POST',
       headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': `multipart/related; boundary=${boundary}`,
+        Authorization: `Bearer ${params.accessToken}`,
+        'Content-Type': 'application/json; charset=UTF-8',
+        'X-Upload-Content-Type': params.contentType,
+        'X-Upload-Content-Length': String(params.content.size),
       },
-      body: multipartBlob,
-    }
+      body: JSON.stringify(params.metadata),
+    },
+    params.errorMessage
   );
 
-  if (!res.ok) {
-    throw await parseDriveError(res, `Failed to upload "${fileName}" to Google Drive.`);
+  const location = res.headers.get('Location');
+  if (location) return location;
+  // Location is not a CORS-safelisted header. The upload id Google also sends identifies the
+  // same session, so the session URL can be rebuilt from it if Location is hidden.
+  const uploadId = res.headers.get('X-GUploader-UploadID');
+  if (uploadId) return `${initUrl}&upload_id=${encodeURIComponent(uploadId)}`;
+  throw new DriveApiError(`${params.errorMessage} Google Drive did not return an upload session.`, 502);
+}
+
+type ResumableStatus =
+  | { kind: 'done'; file: DriveFileItem }
+  | { kind: 'resume'; offset: number }
+  | { kind: 'restart' };
+
+/**
+ * Asks the session how many bytes it holds. A 308 with a readable Range resumes after the last
+ * byte. Anything less certain (no Range, a hidden Range, an expired session) restarts with a
+ * fresh session, which is always valid; resending bytes into the old one is not.
+ */
+async function queryResumableStatus(sessionUrl: string, size: number): Promise<ResumableStatus> {
+  let res: Response;
+  try {
+    res = await fetch(sessionUrl, {
+      method: 'PUT',
+      headers: { 'Content-Range': `bytes */${size}` },
+    });
+  } catch {
+    return { kind: 'restart' };
+  }
+  if (res.ok) {
+    return { kind: 'done', file: normalizeDriveFile((await res.json()) as Record<string, unknown>) };
+  }
+  if (res.status === 308) {
+    const match = res.headers.get('Range')?.match(/bytes=0-(\d+)/);
+    if (match) {
+      const offset = Number(match[1]) + 1;
+      if (offset > 0 && offset < size) return { kind: 'resume', offset };
+    }
+  }
+  return { kind: 'restart' };
+}
+
+async function uploadResumable(params: DriveUploadParams): Promise<DriveFileItem> {
+  const size = params.content.size;
+  let sessionUrl = await startResumableSession(params);
+  let offset = 0;
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt < RESUMABLE_MAX_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** (attempt - 1)));
+    }
+
+    let res: Response | null = null;
+    try {
+      res = await fetch(sessionUrl, {
+        method: 'PUT',
+        headers:
+          offset > 0
+            ? {
+                'Content-Type': params.contentType,
+                'Content-Range': `bytes ${offset}-${size - 1}/${size}`,
+              }
+            : { 'Content-Type': params.contentType },
+        body: offset > 0 ? params.content.slice(offset) : params.content,
+      });
+    } catch (err) {
+      // Network drop mid-upload: find out what arrived.
+      lastError = err;
+    }
+
+    if (res?.ok) {
+      return normalizeDriveFile((await res.json()) as Record<string, unknown>);
+    }
+
+    if (res) {
+      const err = await parseDriveError(res.clone(), params.errorMessage);
+      // 308 means the session holds part of the file; the status query below finds out how much.
+      const retryable =
+        res.status === 308 ||
+        res.status >= 500 ||
+        res.status === 404 ||
+        res.status === 410 ||
+        err.isRateLimit;
+      if (!retryable) throw err;
+      lastError = err;
+      if (res.status === 404 || res.status === 410) {
+        // The session expired or was lost.
+        sessionUrl = await startResumableSession(params);
+        offset = 0;
+        continue;
+      }
+    }
+
+    const status = await queryResumableStatus(sessionUrl, size);
+    if (status.kind === 'done') return status.file;
+    if (status.kind === 'resume') {
+      offset = status.offset;
+    } else {
+      sessionUrl = await startResumableSession(params);
+      offset = 0;
+    }
   }
 
-  const raw = (await res.json()) as Record<string, unknown>;
-  return normalizeDriveFile(raw);
+  if (lastError instanceof DriveApiError) throw lastError;
+  throw new DriveApiError(params.errorMessage, 503);
 }
 
 export function inferAudioMimeFromName(fileName: string): string {
@@ -1509,8 +1677,9 @@ export async function listDrivePlaylistFiles(
 }
 
 /**
- * Uploads a text/JSON file to Google Drive using multipart/related upload.
- * Supports creating a new file (POST) or updating an existing app-managed file (PATCH).
+ * Uploads a text/JSON file to Google Drive: creates a new file (POST) or updates an existing
+ * app-managed file (PATCH). A large library manifest can pass 5 MB, so this goes through the
+ * same multipart-or-resumable path as audio.
  */
 async function uploadMultipartTextFile(params: {
   accessToken: string;
@@ -1521,7 +1690,6 @@ async function uploadMultipartTextFile(params: {
   existingFileId?: string | null;
   parentFolderId?: string | null;
 }): Promise<DriveFileItem> {
-  const boundary = `cratesync_boundary_${crypto.randomUUID().replace(/-/g, '')}`;
   const isUpdate = Boolean(params.existingFileId);
   const metadata: Record<string, unknown> = {
     name: params.fileName,
@@ -1532,42 +1700,17 @@ async function uploadMultipartTextFile(params: {
     metadata.parents = [params.parentFolderId];
   }
 
-  const multipartBody = [
-    `--${boundary}`,
-    'Content-Type: application/json; charset=UTF-8',
-    '',
-    JSON.stringify(metadata),
-    `--${boundary}`,
-    `Content-Type: ${params.mimeType}; charset=UTF-8`,
-    '',
-    params.content,
-    `--${boundary}--`,
-  ].join('\r\n');
-
-  const targetUrl = isUpdate
-    ? `${DRIVE_UPLOAD_ENDPOINT}/${encodeURIComponent(params.existingFileId!)}?uploadType=multipart&fields=id,name,mimeType,size,modifiedTime,webViewLink,parents,appProperties`
-    : `${DRIVE_UPLOAD_ENDPOINT}?uploadType=multipart&fields=id,name,mimeType,size,modifiedTime,webViewLink,parents,appProperties`;
-
-  const res = await fetch(targetUrl, {
-    method: isUpdate ? 'PATCH' : 'POST',
-    headers: {
-      Authorization: `Bearer ${params.accessToken}`,
-      'Content-Type': `multipart/related; boundary=${boundary}`,
-    },
-    body: multipartBody,
+  return uploadFileContentToDrive({
+    accessToken: params.accessToken,
+    metadata,
+    content: new Blob([params.content]),
+    contentType: `${params.mimeType}; charset=UTF-8`,
+    existingFileId: params.existingFileId,
+    fields: 'id,name,mimeType,size,modifiedTime,webViewLink,parents,appProperties',
+    errorMessage: isUpdate
+      ? 'Failed to update existing file on Google Drive.'
+      : 'Failed to upload file to Google Drive.',
   });
-
-  if (!res.ok) {
-    throw await parseDriveError(
-      res,
-      isUpdate
-        ? 'Failed to update existing file on Google Drive.'
-        : 'Failed to upload file to Google Drive.'
-    );
-  }
-
-  const raw = (await res.json()) as Record<string, unknown>;
-  return normalizeDriveFile(raw);
 }
 
 export async function syncCanonicalManifestToDrive(
@@ -1719,6 +1862,7 @@ export function parseLibraryBackupPayload(rawText: string): CrateSyncLibraryBack
       syncHistory: Array.isArray(parsed.syncHistory) ? parsed.syncHistory : [],
       devices: Array.isArray(parsed.devices) ? parsed.devices : [],
       folderMappings: Array.isArray(parsed.folderMappings) ? parsed.folderMappings : [],
+      folderMappingTombstones: mergeFolderMappingTombstones([parsed.folderMappingTombstones]),
     };
   } catch {
     return null;

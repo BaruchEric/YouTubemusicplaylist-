@@ -25,6 +25,7 @@ import type {
   DeviceFolderBinding,
   DirectoryWatcherStatus,
   DriveFolderMapping,
+  FolderMappingTombstone,
   LocalTrack,
   Playlist,
   PlaylistDiff,
@@ -72,7 +73,8 @@ import {
 import {
   getOrCreateCurrentDeviceProfile,
   mergeDeviceProfiles,
-  mergeFolderMappings,
+  mergeFolderMappingState,
+  mergeFolderMappingTombstones,
   resolveLocalBindingForDriveFolder,
   saveCurrentDeviceProfile,
   translateRelativePathForDevice,
@@ -102,11 +104,22 @@ export default function App() {
   const [devices, setDevices] = useState<SyncDeviceProfile[]>(() => [
     getOrCreateCurrentDeviceProfile(),
   ]);
+  const devicesRef = useRef<SyncDeviceProfile[]>(devices);
+  useEffect(() => {
+    devicesRef.current = devices;
+  }, [devices]);
   const [folderMappings, setFolderMappings] = useState<DriveFolderMapping[]>([]);
   const folderMappingsRef = useRef<DriveFolderMapping[]>(folderMappings);
   useEffect(() => {
     folderMappingsRef.current = folderMappings;
   }, [folderMappings]);
+  const [folderMappingTombstones, setFolderMappingTombstones] = useState<FolderMappingTombstone[]>(
+    []
+  );
+  const folderMappingTombstonesRef = useRef<FolderMappingTombstone[]>(folderMappingTombstones);
+  useEffect(() => {
+    folderMappingTombstonesRef.current = folderMappingTombstones;
+  }, [folderMappingTombstones]);
   const currentDeviceRef = useRef<SyncDeviceProfile>(currentDevice);
   useEffect(() => {
     currentDeviceRef.current = currentDevice;
@@ -311,6 +324,7 @@ export default function App() {
       setLastScannedAt(savedState.lastScannedAt);
       setDevices(mergeDeviceProfiles(savedState.devices ?? [], [], currentDeviceRef.current));
       setFolderMappings(savedState.folderMappings ?? []);
+      setFolderMappingTombstones(mergeFolderMappingTombstones([savedState.folderMappingTombstones]));
       setStoredAudioKeys(cacheStats.cachedKeys);
       setDeviceCacheBytes(cacheStats.totalBytes);
       if (savedHandle) {
@@ -349,6 +363,7 @@ export default function App() {
       lastScannedAt,
       devices,
       folderMappings,
+      folderMappingTombstones,
     });
   }, [
     hydrated,
@@ -361,6 +376,7 @@ export default function App() {
     lastScannedAt,
     devices,
     folderMappings,
+    folderMappingTombstones,
   ]);
 
   const trackMap = useMemo(() => {
@@ -1854,10 +1870,22 @@ export default function App() {
       if (backup.devices && backup.devices.length > 0) {
         setDevices((prev) => mergeDeviceProfiles(prev, backup.devices ?? [], currentDeviceRef.current));
       }
-      if (backup.folderMappings && backup.folderMappings.length > 0) {
-        setFolderMappings((prev) =>
-          mergeFolderMappings(prev, backup.folderMappings ?? [], true, currentDeviceRef.current.id)
+      if (
+        (backup.folderMappings?.length ?? 0) > 0 ||
+        (backup.folderMappingTombstones?.length ?? 0) > 0
+      ) {
+        const merged = mergeFolderMappingState(
+          {
+            folderMappings: folderMappingsRef.current,
+            folderMappingTombstones: folderMappingTombstonesRef.current,
+          },
+          backup,
+          currentDeviceRef.current.id
         );
+        folderMappingsRef.current = merged.folderMappings;
+        folderMappingTombstonesRef.current = merged.folderMappingTombstones;
+        setFolderMappings(merged.folderMappings);
+        setFolderMappingTombstones(merged.folderMappingTombstones);
       }
 
       pushToast({
@@ -1894,6 +1922,8 @@ export default function App() {
       binding: DeviceFolderBinding;
     }) => {
       const now = Date.now();
+      // updatedAt lets this binding outlive any earlier tombstone for the same mapping.
+      const binding: DeviceFolderBinding = { ...params.binding, updatedAt: now };
       setFolderMappings((prev) => {
         const existingIdx = prev.findIndex((m) => m.driveFolderId === params.driveFolderId);
         if (existingIdx !== -1) {
@@ -1904,7 +1934,7 @@ export default function App() {
             updatedAt: now,
             deviceBindings: {
               ...existing.deviceBindings,
-              [params.binding.deviceId]: params.binding,
+              [binding.deviceId]: binding,
             },
           };
           const next = [...prev];
@@ -1919,7 +1949,7 @@ export default function App() {
           createdAt: now,
           updatedAt: now,
           deviceBindings: {
-            [params.binding.deviceId]: params.binding,
+            [binding.deviceId]: binding,
           },
         };
         return [created, ...prev];
@@ -1933,8 +1963,22 @@ export default function App() {
     [pushToast]
   );
 
+  const addFolderMappingTombstone = useCallback((tombstone: FolderMappingTombstone) => {
+    const next = mergeFolderMappingTombstones([folderMappingTombstonesRef.current, [tombstone]]);
+    folderMappingTombstonesRef.current = next;
+    setFolderMappingTombstones(next);
+  }, []);
+
   const handleUnbindDeviceFromMapping = useCallback(
     (mappingId: string, deviceId: string) => {
+      const mapping = folderMappingsRef.current.find((m) => m.id === mappingId);
+      if (mapping) {
+        addFolderMappingTombstone({
+          driveFolderId: mapping.driveFolderId,
+          deviceId,
+          deletedAt: Date.now(),
+        });
+      }
       setFolderMappings((prev) =>
         prev
           .map((m) => {
@@ -1955,18 +1999,60 @@ export default function App() {
         tone: 'neutral',
       });
     },
-    [pushToast]
+    [pushToast, addFolderMappingTombstone]
   );
 
   const handleDeleteFolderMapping = useCallback(
     (mappingId: string) => {
+      const mapping = folderMappingsRef.current.find((m) => m.id === mappingId);
+      if (mapping) {
+        addFolderMappingTombstone({ driveFolderId: mapping.driveFolderId, deletedAt: Date.now() });
+      }
       setFolderMappings((prev) => prev.filter((m) => m.id !== mappingId));
       pushToast({
         title: 'Folder mapping removed',
         tone: 'neutral',
       });
     },
-    [pushToast]
+    [pushToast, addFolderMappingTombstone]
+  );
+
+  /**
+   * Merges the Drive manifest's devices and folder mappings into this device before a push
+   * writes the manifest, and returns what the push should write. Without this, a push from a
+   * device that had not pulled would overwrite other devices' bindings and tombstones.
+   */
+  const handlePrepareFolderStateForManifest = useCallback(
+    (remote: CrateSyncLibraryBackupPayload | null) => {
+      if (!remote) {
+        return {
+          devices: devicesRef.current,
+          folderMappings: folderMappingsRef.current,
+          folderMappingTombstones: folderMappingTombstonesRef.current,
+        };
+      }
+      const devicesNext = mergeDeviceProfiles(
+        devicesRef.current,
+        remote.devices ?? [],
+        currentDeviceRef.current
+      );
+      const merged = mergeFolderMappingState(
+        {
+          folderMappings: folderMappingsRef.current,
+          folderMappingTombstones: folderMappingTombstonesRef.current,
+        },
+        remote,
+        currentDeviceRef.current.id
+      );
+      devicesRef.current = devicesNext;
+      folderMappingsRef.current = merged.folderMappings;
+      folderMappingTombstonesRef.current = merged.folderMappingTombstones;
+      setDevices(devicesNext);
+      setFolderMappings(merged.folderMappings);
+      setFolderMappingTombstones(merged.folderMappingTombstones);
+      return { devices: devicesNext, ...merged };
+    },
+    []
   );
 
   const handleMarkMappingSynced = useCallback((mappingId: string, deviceId: string) => {
@@ -2012,23 +2098,32 @@ export default function App() {
       const existingTracks = tracksRef.current;
 
       // Merge remote device profiles & cross-device folder mappings first so path translation uses latest bindings
-      const effectiveMappings =
-        payload.manifest?.folderMappings && payload.manifest.folderMappings.length > 0
-          ? mergeFolderMappings(
-              folderMappingsRef.current,
-              payload.manifest.folderMappings,
-              true,
+      const manifestHasFolderState =
+        (payload.manifest?.folderMappings?.length ?? 0) > 0 ||
+        (payload.manifest?.folderMappingTombstones?.length ?? 0) > 0;
+      const mergedFolderState =
+        payload.manifest && manifestHasFolderState
+          ? mergeFolderMappingState(
+              {
+                folderMappings: folderMappingsRef.current,
+                folderMappingTombstones: folderMappingTombstonesRef.current,
+              },
+              payload.manifest,
               currentDeviceRef.current.id
             )
-          : folderMappingsRef.current;
+          : null;
+      const effectiveMappings = mergedFolderState?.folderMappings ?? folderMappingsRef.current;
 
       if (payload.manifest?.devices && payload.manifest.devices.length > 0) {
         setDevices((prev) =>
           mergeDeviceProfiles(prev, payload.manifest!.devices ?? [], currentDeviceRef.current)
         );
       }
-      if (payload.manifest?.folderMappings && payload.manifest.folderMappings.length > 0) {
-        setFolderMappings(effectiveMappings);
+      if (mergedFolderState) {
+        folderMappingsRef.current = mergedFolderState.folderMappings;
+        folderMappingTombstonesRef.current = mergedFolderState.folderMappingTombstones;
+        setFolderMappings(mergedFolderState.folderMappings);
+        setFolderMappingTombstones(mergedFolderState.folderMappingTombstones);
       }
 
       const activeDeviceId = currentDeviceRef.current.id;
@@ -2947,6 +3042,7 @@ export default function App() {
             onUnbindDeviceFromMapping={handleUnbindDeviceFromMapping}
             onDeleteFolderMapping={handleDeleteFolderMapping}
             onMarkMappingSynced={handleMarkMappingSynced}
+            onPrepareFolderStateForManifest={handlePrepareFolderStateForManifest}
             onImportPlaylist={handleImportPlaylist}
             onRestoreLibraryBackup={handleRestoreLibraryBackup}
             onSyncFromDriveSourceOfTruth={handleSyncFromDriveSourceOfTruth}

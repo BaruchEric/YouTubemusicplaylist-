@@ -1,6 +1,7 @@
 import type {
   DeviceFolderBinding,
   DriveFolderMapping,
+  FolderMappingTombstone,
   LocalTrack,
   SyncDeviceProfile,
 } from '../types/music';
@@ -279,4 +280,132 @@ export function mergeFolderMappings(
   }
 
   return Array.from(byDriveFolderId.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+// A device offline for longer than this can bring a deleted mapping back. Tombstones are a few
+// dozen bytes each, so a year costs nothing and covers any realistic gap between syncs.
+const TOMBSTONE_TTL_MS = 365 * 24 * 60 * 60 * 1000;
+
+function tombstoneKey(driveFolderId: string, deviceId?: string): string {
+  return `${driveFolderId}::${deviceId ?? '*'}`;
+}
+
+function isTombstone(value: unknown): value is FolderMappingTombstone {
+  if (!value || typeof value !== 'object') return false;
+  const t = value as Record<string, unknown>;
+  return (
+    typeof t.driveFolderId === 'string' &&
+    t.driveFolderId.length > 0 &&
+    typeof t.deletedAt === 'number' &&
+    Number.isFinite(t.deletedAt) &&
+    (t.deviceId === undefined || (typeof t.deviceId === 'string' && t.deviceId.length > 0))
+  );
+}
+
+/**
+ * Unions tombstone lists, keeping the latest deletion per mapping or per binding. Drops
+ * malformed entries (they may come from a hand-edited or older manifest) and expired ones.
+ */
+export function mergeFolderMappingTombstones(
+  lists: ReadonlyArray<ReadonlyArray<unknown> | undefined>,
+  now = Date.now()
+): FolderMappingTombstone[] {
+  const byKey = new Map<string, FolderMappingTombstone>();
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    for (const raw of list) {
+      if (!isTombstone(raw)) continue;
+      if (now - raw.deletedAt > TOMBSTONE_TTL_MS) continue;
+      const key = tombstoneKey(raw.driveFolderId, raw.deviceId);
+      const prev = byKey.get(key);
+      if (!prev || raw.deletedAt > prev.deletedAt) {
+        byKey.set(
+          key,
+          raw.deviceId
+            ? { driveFolderId: raw.driveFolderId, deviceId: raw.deviceId, deletedAt: raw.deletedAt }
+            : { driveFolderId: raw.driveFolderId, deletedAt: raw.deletedAt }
+        );
+      }
+    }
+  }
+  return Array.from(byKey.values()).sort((a, b) => b.deletedAt - a.deletedAt);
+}
+
+/**
+ * Removes every binding a tombstone covers and every mapping left with no bindings.
+ *
+ * Each binding is judged by its own updatedAt, never by the mapping's updatedAt: any device
+ * bumps the mapping's updatedAt when it marks a sync, so a stale device syncing after the
+ * delete would otherwise bring the mapping back. A binding saved after the tombstone survives,
+ * which is how re-creating a deleted mapping works.
+ */
+export function applyFolderMappingTombstones(
+  mappings: DriveFolderMapping[],
+  tombstones: FolderMappingTombstone[]
+): DriveFolderMapping[] {
+  if (tombstones.length === 0) return mappings;
+  const deletedAt = new Map<string, number>();
+  for (const t of tombstones) {
+    deletedAt.set(tombstoneKey(t.driveFolderId, t.deviceId), t.deletedAt);
+  }
+
+  const result: DriveFolderMapping[] = [];
+  for (const mapping of mappings) {
+    const wholeDeletedAt = deletedAt.get(tombstoneKey(mapping.driveFolderId));
+    const kept: Record<string, DeviceFolderBinding> = {};
+    let removedAny = false;
+    for (const [deviceId, binding] of Object.entries(mapping.deviceBindings ?? {})) {
+      const bindingTime = binding.updatedAt ?? 0;
+      const bindingDeletedAt = deletedAt.get(tombstoneKey(mapping.driveFolderId, deviceId));
+      const covered =
+        (wholeDeletedAt !== undefined && bindingTime <= wholeDeletedAt) ||
+        (bindingDeletedAt !== undefined && bindingTime <= bindingDeletedAt);
+      if (covered) {
+        removedAny = true;
+      } else {
+        kept[deviceId] = binding;
+      }
+    }
+    if (Object.keys(kept).length === 0) continue;
+    result.push(removedAny ? { ...mapping, deviceBindings: kept } : mapping);
+  }
+  return result;
+}
+
+export interface FolderMappingState {
+  folderMappings: DriveFolderMapping[];
+  folderMappingTombstones: FolderMappingTombstone[];
+}
+
+/** What a push writes to the Drive manifest for devices and folder mappings. */
+export interface ManifestFolderState extends FolderMappingState {
+  devices: SyncDeviceProfile[];
+}
+
+/**
+ * Merges this device's folder mappings with a copy from Drive or a backup: unions the
+ * tombstones, merges the mappings (keeping this device's own bindings), then applies the
+ * tombstones so neither side can bring back what the other deleted.
+ */
+export function mergeFolderMappingState(
+  local: FolderMappingState,
+  remote: { folderMappings?: unknown; folderMappingTombstones?: unknown },
+  localDeviceId: string,
+  now = Date.now()
+): FolderMappingState {
+  const remoteMappings = Array.isArray(remote.folderMappings)
+    ? (remote.folderMappings as DriveFolderMapping[])
+    : [];
+  const remoteTombstones = Array.isArray(remote.folderMappingTombstones)
+    ? remote.folderMappingTombstones
+    : [];
+  const tombstones = mergeFolderMappingTombstones(
+    [local.folderMappingTombstones, remoteTombstones],
+    now
+  );
+  const merged = mergeFolderMappings(local.folderMappings, remoteMappings, true, localDeviceId);
+  return {
+    folderMappings: applyFolderMappingTombstones(merged, tombstones),
+    folderMappingTombstones: tombstones,
+  };
 }

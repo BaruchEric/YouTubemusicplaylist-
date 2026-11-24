@@ -3,9 +3,11 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import { createAiAccessGuard, parseEmailList, readFirebaseProjectId } from './server/aiAccess.ts';
 
 const PORT = Number(process.env.PORT) || 3000;
-const HOST = '0.0.0.0';
+// 0.0.0.0 suits a container deploy. Set BIND_HOST=127.0.0.1 to keep a local server off the network.
+const HOST = process.env.BIND_HOST?.trim() || '0.0.0.0';
 const MODEL_NAME = 'gemini-4-hydrogen';
 
 const CANONICAL_GENRES = [
@@ -145,6 +147,18 @@ function asyncRoute(handler: AsyncHandler): express.RequestHandler {
 
 async function startServer() {
   const app = express();
+
+  // Every /api route spends Gemini quota, so each request needs a Google sign-in. The guard
+  // runs before body parsing so an unauthenticated request is turned away without reading it.
+  app.use(
+    '/api',
+    createAiAccessGuard({
+      projectId: readFirebaseProjectId(path.resolve(process.cwd(), 'firebase-applet-config.json')),
+      allowedEmails: parseEmailList(process.env.GEMINI_ALLOWED_EMAILS),
+      // Sign-in is not authorized on localhost, so the dev server trusts this machine.
+      trustLoopback: process.env.NODE_ENV !== 'production',
+    })
+  );
   app.use(express.json({ limit: '1mb' }));
 
   app.post('/api/metadata/suggest', asyncRoute(async (req, res) => {

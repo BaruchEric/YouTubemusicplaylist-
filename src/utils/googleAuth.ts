@@ -33,6 +33,19 @@ export interface GoogleDriveAuthState {
   tokenIssuedAt: number | null;
 }
 
+/**
+ * Returns a Firebase ID token for the signed-in Google user, or null when nobody is signed in.
+ * The server's AI endpoints require it. Unlike the Drive access token it survives reloads,
+ * because Firebase keeps the session; authStateReady waits for that session to load so a
+ * fresh page does not look signed out for its first moment.
+ */
+export async function getFirebaseIdToken(): Promise<string | null> {
+  await auth.authStateReady();
+  const user = auth.currentUser;
+  if (!user || user.isAnonymous) return null;
+  return user.getIdToken();
+}
+
 export function getDriveAccessToken(): string | null {
   return cachedAccessToken;
 }

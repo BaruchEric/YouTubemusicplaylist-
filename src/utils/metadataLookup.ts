@@ -1,4 +1,5 @@
 import type { LocalTrack } from '../types/music';
+import { postAiRequest } from './aiApi';
 
 export interface MetadataSuggestion {
   trackId: string;
@@ -45,11 +46,12 @@ export async function fetchMetadataSuggestions(
     }
 
     const chunk = tracks.slice(i, i + BATCH_SIZE);
-    const response = await fetch('/api/metadata/suggest', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: options?.signal,
-      body: JSON.stringify({
+    const data = await postAiRequest<{
+      suggestions: MetadataSuggestion[];
+      sources: SearchGroundingSource[];
+    }>(
+      '/api/metadata/suggest',
+      {
         tracks: chunk.map((t) => ({
           id: t.id,
           fileName: t.fileName,
@@ -61,20 +63,12 @@ export async function fetchMetadataSuggestions(
           year: t.year,
           duration: t.duration,
         })),
-      }),
-    });
-
-    const data = (await response.json().catch(() => ({}))) as {
-      suggestions?: MetadataSuggestion[];
-      sources?: SearchGroundingSource[];
-      error?: string;
-    };
-
-    if (!response.ok) {
-      throw new Error(
-        data.error || `Metadata lookup failed with status ${response.status}.`
-      );
-    }
+      },
+      {
+        signal: options?.signal,
+        fallbackError: (status) => `Metadata lookup failed with status ${status}.`,
+      }
+    );
 
     if (Array.isArray(data.suggestions)) {
       for (const item of data.suggestions) {

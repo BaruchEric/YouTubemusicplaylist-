@@ -66,6 +66,7 @@ import {
   normalizeFolderPath,
   resolveDriveMappingForLocalTrack,
   trackMatchesLocalFolder,
+  type ManifestFolderState,
 } from '../utils/folderMappings';
 import { loadAudioBlob } from '../utils/storage';
 import type { ScannedFileEntry } from '../utils/syncEngine';
@@ -107,6 +108,13 @@ interface GoogleDriveTransferSectionProps {
   onUnbindDeviceFromMapping: (mappingId: string, deviceId: string) => void;
   onDeleteFolderMapping: (mappingId: string) => void;
   onMarkMappingSynced: (mappingId: string, deviceId: string) => void;
+  /**
+   * Merges a downloaded Drive manifest's devices and folder mappings into this device (or,
+   * given null, changes nothing) and returns the state a push should write to the manifest.
+   */
+  onPrepareFolderStateForManifest: (
+    remote: CrateSyncLibraryBackupPayload | null
+  ) => ManifestFolderState;
   onImportPlaylist: (name: string, seeds: ImportedTrackSeed[]) => void;
   onRestoreLibraryBackup: (
     backup: CrateSyncLibraryBackupPayload,
@@ -244,6 +252,7 @@ export function GoogleDriveTransferSection({
   onUnbindDeviceFromMapping,
   onDeleteFolderMapping,
   onMarkMappingSynced,
+  onPrepareFolderStateForManifest,
   onImportPlaylist,
   onRestoreLibraryBackup,
   onSyncFromDriveSourceOfTruth,
@@ -533,6 +542,30 @@ export function GoogleDriveTransferSection({
     } finally {
       setAuthLoading(false);
     }
+  };
+
+  /**
+   * Reads the current Drive manifest and merges its devices, folder mappings and tombstones
+   * into this device before a push overwrites it. Otherwise a device that had not pulled
+   * would erase bindings and deletions that other devices wrote since.
+   */
+  const mergeManifestFolderStateBeforeWrite = async (
+    token: string,
+    manifestFileId: string | null
+  ): Promise<ManifestFolderState> => {
+    if (!manifestFileId) return onPrepareFolderStateForManifest(null);
+    let remote: CrateSyncLibraryBackupPayload | null = null;
+    try {
+      const raw = await downloadDriveFileText(token, {
+        id: manifestFileId,
+        mimeType: 'application/json',
+      });
+      remote = parseLibraryBackupPayload(raw);
+    } catch (err) {
+      // The manifest was deleted since the last listing: nothing to merge.
+      if (!(err instanceof DriveApiError && err.status === 404)) throw err;
+    }
+    return onPrepareFolderStateForManifest(remote);
   };
 
   // Canonical source-of-truth manifest file (prioritizes cratesync-source-of-truth.json)
@@ -1162,6 +1195,12 @@ export function GoogleDriveTransferSection({
             const link = uploadedIdByTrackId.get(t.id);
             return link ? { ...t, ...link } : t;
           });
+          const existingManifestId =
+            canonicalManifest?.appProperties?.cratesyncType === 'source-of-truth' ||
+            canonicalManifest?.name === CRATESYNC_CANONICAL_MANIFEST_NAME
+              ? canonicalManifest.id
+              : null;
+          const folderState = await mergeManifestFolderStateBeforeWrite(token, existingManifestId);
           const payload = buildLibraryBackupPayload({
             tracks: updatedTracks,
             playlists,
@@ -1170,15 +1209,10 @@ export function GoogleDriveTransferSection({
             watchedFolderName,
             driveMusicFolderId: selectedFolderId || rootFolder.id,
             driveMusicFolderName: selectedFolderId ? selectedFolderLabel : rootFolder.name,
-            devices,
-            folderMappings,
+            ...folderState,
           });
           await syncCanonicalManifestToDrive(token, payload, {
-            existingFileId:
-              canonicalManifest?.appProperties?.cratesyncType === 'source-of-truth' ||
-              canonicalManifest?.name === CRATESYNC_CANONICAL_MANIFEST_NAME
-                ? canonicalManifest.id
-                : null,
+            existingFileId: existingManifestId,
             parentFolderId: rootFolder.id,
           });
         }
@@ -1308,6 +1342,10 @@ export function GoogleDriveTransferSection({
           activeItem: CRATESYNC_CANONICAL_MANIFEST_NAME,
         });
 
+        const folderState = await mergeManifestFolderStateBeforeWrite(
+          token,
+          action.existingManifestId
+        );
         const payload = buildLibraryBackupPayload({
           tracks: updatedTracksForManifest,
           playlists,
@@ -1316,9 +1354,9 @@ export function GoogleDriveTransferSection({
           watchedFolderName,
           driveMusicFolderId: selectedFolderId || defaultFolder.id,
           driveMusicFolderName: selectedFolderId ? selectedFolderLabel : defaultFolder.name,
-          devices,
-          folderMappings,
+          ...folderState,
         });
+        const mappingCount = folderState.folderMappings.length;
 
         const syncedManifest = await syncCanonicalManifestToDrive(token, payload, {
           existingFileId: action.existingManifestId,
@@ -1329,8 +1367,8 @@ export function GoogleDriveTransferSection({
           tone: 'success',
           text:
             uploadedLinks.length > 0
-              ? `Pushed ${uploadedLinks.length} song${uploadedLinks.length === 1 ? '' : 's'} and updated "${syncedManifest.name}" in Google Drive (${payload.stats.trackCount} songs · ${payload.stats.playlistCount} playlists · ${folderMappings.length} folder mapping${folderMappings.length === 1 ? '' : 's'}).`
-              : `Updated "${syncedManifest.name}" in Google Drive (${payload.stats.trackCount} songs · ${payload.stats.playlistCount} playlists · ${folderMappings.length} folder mapping${folderMappings.length === 1 ? '' : 's'}).`,
+              ? `Pushed ${uploadedLinks.length} song${uploadedLinks.length === 1 ? '' : 's'} and updated "${syncedManifest.name}" in Google Drive (${payload.stats.trackCount} songs · ${payload.stats.playlistCount} playlists · ${mappingCount} folder mapping${mappingCount === 1 ? '' : 's'}).`
+              : `Updated "${syncedManifest.name}" in Google Drive (${payload.stats.trackCount} songs · ${payload.stats.playlistCount} playlists · ${mappingCount} folder mapping${mappingCount === 1 ? '' : 's'}).`,
         });
         onNotify?.({
           title: 'Google Drive source of truth updated',

@@ -1,5 +1,6 @@
 import type {
   DriveFolderMapping,
+  FolderMappingTombstone,
   LocalTrack,
   Playlist,
   ScanLogEntry,
@@ -27,6 +28,7 @@ export interface PersistedLibraryState {
   lastScannedAt: number | null;
   devices?: SyncDeviceProfile[];
   folderMappings?: DriveFolderMapping[];
+  folderMappingTombstones?: FolderMappingTombstone[];
 }
 
 const DEFAULT_STATE: PersistedLibraryState = {
@@ -39,6 +41,7 @@ const DEFAULT_STATE: PersistedLibraryState = {
   lastScannedAt: null,
   devices: [],
   folderMappings: [],
+  folderMappingTombstones: [],
 };
 
 const LS_FALLBACK_KEY = 'cratesync_library_v1';
