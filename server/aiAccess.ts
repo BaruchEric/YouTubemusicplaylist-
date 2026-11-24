@@ -38,6 +38,15 @@ export function isLoopbackAddress(address: string | undefined): boolean {
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 }
 
+/**
+ * A browser talking straight to the dev server sends none of these. A proxy on the same host
+ * (tailscale serve, Caddy, nginx, a hosted preview) adds one, and its requests arrive from
+ * loopback, so a loopback peer only counts as this machine when they are all absent.
+ */
+function hasProxyHeaders(req: Request): boolean {
+  return Boolean(req.get('x-forwarded-for') || req.get('forwarded') || req.get('x-real-ip'));
+}
+
 const LOCAL_DEV_CALLER: AiCaller = { uid: 'local-dev', email: null };
 
 /**
@@ -139,7 +148,12 @@ export function createAiAccessGuard(options: AiAccessOptions): RequestHandler {
     const header = req.get('authorization') ?? '';
     const match = header.match(/^Bearer\s+(\S+)$/i);
     // req.socket is the TCP peer, which a client cannot fake the way it can fake X-Forwarded-For.
-    if (!match && options.trustLoopback && isLoopbackAddress(req.socket.remoteAddress)) {
+    if (
+      !match &&
+      options.trustLoopback &&
+      isLoopbackAddress(req.socket.remoteAddress) &&
+      !hasProxyHeaders(req)
+    ) {
       return LOCAL_DEV_CALLER;
     }
 

@@ -129,6 +129,19 @@ describe('createAiAccessGuard', () => {
     expect((await call(strict)).status).toBe(401);
   });
 
+  test('trustLoopback does not trust requests a same-host proxy forwarded', async () => {
+    const url = await startApp({ trustLoopback: true });
+    const proxyHeaders: Array<[string, string]> = [
+      ['X-Forwarded-For', '203.0.113.7'],
+      ['Forwarded', 'for=203.0.113.7'],
+      ['X-Real-IP', '203.0.113.7'],
+    ];
+    for (const header of proxyHeaders) {
+      const res = await fetch(url, { method: 'POST', headers: [header] });
+      expect(res.status).toBe(401);
+    }
+  });
+
   test('recognizes loopback peers only', () => {
     expect(['127.0.0.1', '::1', '::ffff:127.0.0.1'].every(isLoopbackAddress)).toBe(true);
     expect(['10.0.0.5', '192.168.1.10', '::ffff:10.0.0.5', undefined].some(isLoopbackAddress)).toBe(
