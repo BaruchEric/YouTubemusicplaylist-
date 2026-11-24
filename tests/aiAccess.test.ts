@@ -6,7 +6,6 @@ import express from 'express';
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT, type JWK } from 'jose';
 import {
   createAiAccessGuard,
-  isLoopbackAddress,
   verifyFirebaseIdToken,
   type AiAccessOptions,
 } from '../server/aiAccess.ts';
@@ -121,32 +120,10 @@ describe('createAiAccessGuard', () => {
     expect(ok.status).toBe(200);
   });
 
-  test('trustLoopback lets this machine in without a token, and still checks tokens', async () => {
-    const trusted = await startApp({ trustLoopback: true });
-    expect((await call(trusted)).status).toBe(200);
-    expect((await call(trusted, 'not-a-jwt')).status).toBe(401);
-    const strict = await startApp({ trustLoopback: false });
-    expect((await call(strict)).status).toBe(401);
-  });
-
-  test('trustLoopback does not trust requests a same-host proxy forwarded', async () => {
-    const url = await startApp({ trustLoopback: true });
-    const proxyHeaders: Array<[string, string]> = [
-      ['X-Forwarded-For', '203.0.113.7'],
-      ['Forwarded', 'for=203.0.113.7'],
-      ['X-Real-IP', '203.0.113.7'],
-    ];
-    for (const header of proxyHeaders) {
-      const res = await fetch(url, { method: 'POST', headers: [header] });
-      expect(res.status).toBe(401);
-    }
-  });
-
-  test('recognizes loopback peers only', () => {
-    expect(['127.0.0.1', '::1', '::ffff:127.0.0.1'].every(isLoopbackAddress)).toBe(true);
-    expect(['10.0.0.5', '192.168.1.10', '::ffff:10.0.0.5', undefined].some(isLoopbackAddress)).toBe(
-      false
-    );
+  test('a request from this machine still needs a token', async () => {
+    // The guard used to wave loopback requests through in development. It no longer does.
+    const url = await startApp({});
+    expect((await call(url)).status).toBe(401);
   });
 
   test('answers 503 when no project id is configured', async () => {

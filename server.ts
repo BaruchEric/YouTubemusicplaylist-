@@ -155,8 +155,6 @@ async function startServer() {
     createAiAccessGuard({
       projectId: readFirebaseProjectId(path.resolve(process.cwd(), 'firebase-applet-config.json')),
       allowedEmails: parseEmailList(process.env.GEMINI_ALLOWED_EMAILS),
-      // Sign-in is not authorized on localhost, so the dev server trusts this machine.
-      trustLoopback: process.env.NODE_ENV !== 'production',
     })
   );
   app.use(express.json({ limit: '1mb' }));
@@ -488,7 +486,8 @@ async function startServer() {
   }
 
   app.listen(PORT, HOST, () => {
-    console.log(`CrateSync server listening on http://${HOST}:${PORT}`);
+    // Firebase authorizes Google sign-in on localhost but not on 127.0.0.1, so point there.
+    console.log(`CrateSync server listening on ${HOST}:${PORT}, open http://localhost:${PORT}`);
   });
 }
 

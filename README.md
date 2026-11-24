@@ -79,7 +79,7 @@ cp .env.example .env
 | `PORT` | Optional | Server port (defaults to `3000`). |
 | `DISABLE_HMR` | Optional | Set to `true` to disable Vite HMR and file watching. |
 
-> **Google Drive OAuth**: Firebase and Google OAuth client configuration is loaded from [`firebase-applet-config.json`](firebase-applet-config.json). Ensure your local or deployed origin is authorized in your Firebase / Google Cloud OAuth console when using Google Drive sign-in.
+> **Google Drive OAuth**: Firebase and Google OAuth client configuration is loaded from [`firebase-applet-config.json`](firebase-applet-config.json). Google sign-in works only on an authorized domain of that Firebase project (Authentication, Settings, Authorized domains). `localhost` is on the list, so a local server works at `http://localhost:<port>`. Add any other origin you serve from.
 
 ### Running the App
 
@@ -113,7 +113,7 @@ npm start
 
 All API routes are implemented in [`server.ts`](server.ts) and accept JSON payloads up to `1mb`.
 
-Every `/api` request needs an `Authorization: Bearer` header carrying a Firebase ID token from a Google sign-in to this app's Firebase project. The client sends it automatically once the user has signed in with Google on the Drive Sync & Transfer page; signed out, AI lookups show a "Sign in with Google" error. The dev server (`bun run dev`) lets requests from the same machine through without a token, because this Firebase project authorizes sign-in on the deployed domain and not on `localhost`; it still checks any token it is sent. Requests from other machines, and any request carrying `X-Forwarded-For`, `Forwarded` or `X-Real-IP` (which a proxy on the same host adds), still need a token. [`server/aiAccess.ts`](server/aiAccess.ts) verifies the token against Google's published keys, rejects anonymous sign-ins, applies `GEMINI_ALLOWED_EMAILS` when set, and allows each account 240 requests per 10 minutes with at most 2 in flight. The client waits out a `429` using its `Retry-After` header and tries again, up to three times.
+Every `/api` request needs an `Authorization: Bearer` header carrying a Firebase ID token from a Google sign-in to this app's Firebase project. The client sends it automatically once the user has signed in with Google on the Drive Sync & Transfer page; signed out, AI lookups show a "Sign in with Google" error. The dev server works the same way. Open it at `http://localhost:3000`, not `127.0.0.1`: `localhost` is an authorized domain in this Firebase project and `127.0.0.1` is not, so Google sign-in fails there. [`server/aiAccess.ts`](server/aiAccess.ts) verifies the token against Google's published keys, rejects anonymous sign-ins, applies `GEMINI_ALLOWED_EMAILS` when set, and allows each account 240 requests per 10 minutes with at most 2 in flight. The client waits out a `429` using its `Retry-After` header and tries again, up to three times.
 
 ### `POST /api/metadata/suggest`
 Cross-references local audio tracks via Gemini + Google Search grounding to suggest verified metadata.

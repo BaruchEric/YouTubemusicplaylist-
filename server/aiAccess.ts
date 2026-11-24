@@ -22,32 +22,11 @@ export interface AiAccessOptions {
   allowedEmails?: string[];
   /** Key source for verifying tokens. Defaults to Google's published securetoken keys. */
   getKey?: JWTVerifyGetKey;
-  /**
-   * Let requests from this machine through without a token. Meant for the dev server only:
-   * the Firebase project authorizes sign-in on the deployed domain, not on localhost, so a
-   * local run cannot get a token. Token-bearing requests are still verified.
-   */
-  trustLoopback?: boolean;
   windowMs?: number;
   maxRequestsPerWindow?: number;
   maxConcurrent?: number;
   now?: () => number;
 }
-
-export function isLoopbackAddress(address: string | undefined): boolean {
-  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
-}
-
-/**
- * A browser talking straight to the dev server sends none of these. A proxy on the same host
- * (tailscale serve, Caddy, nginx, a hosted preview) adds one, and its requests arrive from
- * loopback, so a loopback peer only counts as this machine when they are all absent.
- */
-function hasProxyHeaders(req: Request): boolean {
-  return Boolean(req.get('x-forwarded-for') || req.get('forwarded') || req.get('x-real-ip'));
-}
-
-const LOCAL_DEV_CALLER: AiCaller = { uid: 'local-dev', email: null };
 
 /**
  * Reads the Firebase project id from the same config file the client uses, so the server
@@ -121,7 +100,7 @@ interface CallerUsage {
 
 /**
  * Express middleware for the Gemini endpoints. It requires a Firebase ID token from a Google
- * sign-in (or, with trustLoopback, a connection from this machine), applies the optional email
+ * sign-in, applies the optional email
  * allowlist, and limits each account to a request budget per window plus a small number of
  * requests in flight.
  *
@@ -147,16 +126,6 @@ export function createAiAccessGuard(options: AiAccessOptions): RequestHandler {
   async function identify(req: Request, res: Response): Promise<AiCaller | null> {
     const header = req.get('authorization') ?? '';
     const match = header.match(/^Bearer\s+(\S+)$/i);
-    // req.socket is the TCP peer, which a client cannot fake the way it can fake X-Forwarded-For.
-    if (
-      !match &&
-      options.trustLoopback &&
-      isLoopbackAddress(req.socket.remoteAddress) &&
-      !hasProxyHeaders(req)
-    ) {
-      return LOCAL_DEV_CALLER;
-    }
-
     if (!options.projectId) {
       res.status(503).json({
         error: 'AI lookups are off: firebase-applet-config.json has no projectId to verify sign-ins against.',
