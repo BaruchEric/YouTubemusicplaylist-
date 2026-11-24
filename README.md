@@ -91,8 +91,8 @@ npm run lint
 # Build production frontend bundle into dist/
 npm run build
 
-# Start production server (serves dist/ + /api/* routes)
-NODE_ENV=production npm start
+# Start production server (serves dist/ + /api/* routes; the script sets NODE_ENV=production)
+npm start
 ```
 
 ### Available Scripts
@@ -101,7 +101,7 @@ NODE_ENV=production npm start
 | --- | --- | --- |
 | `dev` | `tsx server.ts` | Runs Express with Vite middleware in development mode |
 | `build` | `vite build` | Builds the client bundle to `dist/` and copies `src/assets/` |
-| `start` | `node server.ts` | Runs the server (set `NODE_ENV=production` to serve `dist/`) |
+| `start` | `NODE_ENV=production node server.ts` | Runs the production server, serving `dist/` (run `build` first) |
 | `preview` | `vite preview` | Previews the static Vite production build |
 | `lint` | `tsc --noEmit` | Runs strict TypeScript type-checking |
 | `clean` | `rm -rf dist server.js` | Removes build artifacts |

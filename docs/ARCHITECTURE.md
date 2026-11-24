@@ -50,7 +50,7 @@ Managed in [`src/utils/storage.ts`](../src/utils/storage.ts) with three object s
 | --- | --- | --- |
 | `cratesync_device_profile_v1` | [`src/utils/folderMappings.ts`](../src/utils/folderMappings.ts) | Current device profile (`id`, `name`, `platform`, `lastSeenAt`) |
 | `cratesync_play_stats_v1` | [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts) | Per-track play/completion/skip statistics |
-| `cratesync_play_history_v1` | [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts) | Rolling play history (up to 2,000 entries) |
+| `cratesync_play_history_v1` | [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts) | Rolling play history (up to 2,000 entries). Cover art data URLs are stripped before saving to stay under the localStorage quota; the history list reads covers from the track. |
 | `cratesync_transition_settings_v1` | [`src/utils/audioTransitions.ts`](../src/utils/audioTransitions.ts) | Crossfade duration, curve, manual-skip crossfade, and gapless playback settings |
 | `cratesync_replaygain_settings_v1` | [`src/utils/replayGain.ts`](../src/utils/replayGain.ts) | ReplayGain mode, target LUFS (`-14/-16/-18`), preamp, and clipping guard |
 | `cratesync_replaygain_cache_v1` | [`src/utils/replayGain.ts`](../src/utils/replayGain.ts) | Cached loudness measurements (up to 600 tracks) |

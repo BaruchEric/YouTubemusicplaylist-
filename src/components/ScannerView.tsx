@@ -38,6 +38,7 @@ import {
   exportCatalogToM3U8,
   findDuplicateGroups,
 } from '../utils/duplicateDetector';
+import { isSha256Hash } from '../utils/audioMetadata';
 import { computeTrackStatistics } from '../utils/genreInference';
 import { evaluateSmartTrackSearch } from '../utils/smartSearch';
 import {
@@ -219,7 +220,7 @@ export function ScannerView({
     return ids;
   }, [duplicateGroups]);
   const unhashedCount = useMemo(
-    () => tracks.filter((t) => t.fileSize > 0 && !t.contentHash).length,
+    () => tracks.filter((t) => t.fileSize > 0 && !isSha256Hash(t.contentHash)).length,
     [tracks]
   );
 

@@ -131,24 +131,15 @@ export function buildSmartShuffleOrder(
     ordered.push(pinFirstId);
   }
 
-  // Weighted sampling without replacement
-  while (pool.length > 0) {
-    let totalWeight = 0;
-    for (const item of pool) totalWeight += item.weight;
-
-    let threshold = Math.random() * totalWeight;
-    let chosenIdx = pool.length - 1;
-    for (let i = 0; i < pool.length; i++) {
-      threshold -= pool[i].weight;
-      if (threshold <= 0) {
-        chosenIdx = i;
-        break;
-      }
-    }
-
-    ordered.push(pool[chosenIdx].id);
-    pool.splice(chosenIdx, 1);
-  }
+  // Weighted sampling without replacement (Efraimidis-Spirakis): sort by random^(1/weight).
+  // Same distribution as repeatedly drawing by weight, but O(n log n) instead of O(n^2),
+  // which froze the UI for seconds on 10k+ track libraries.
+  const keyed = pool.map((item) => ({
+    id: item.id,
+    key: Math.log(Math.random() || Number.MIN_VALUE) / item.weight,
+  }));
+  keyed.sort((a, b) => b.key - a.key);
+  for (const item of keyed) ordered.push(item.id);
 
   return ordered;
 }

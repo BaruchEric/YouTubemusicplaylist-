@@ -303,6 +303,8 @@ export function ListeningActivitySection({
           <div className="divide-y divide-white/[0.05] text-xs flex-1 max-h-[372px] overflow-y-auto">
             {visibleHistory.map((entry) => {
               const liveTrack = trackMap.get(entry.trackId);
+              // Persisted history drops cover data URLs to stay under the localStorage quota
+              const coverArtUrl = entry.coverArtUrl ?? liveTrack?.coverArtUrl ?? null;
               const isActive = activePlayingTrackId === entry.trackId;
               const isSkipped = entry.outcome === 'skipped';
 
@@ -340,9 +342,9 @@ export function ListeningActivitySection({
                     )}
 
                     <div className="h-8 w-8 rounded bg-[#181B22] border border-white/[0.06] overflow-hidden flex items-center justify-center shrink-0">
-                      {entry.coverArtUrl ? (
+                      {coverArtUrl ? (
                         <img
-                          src={entry.coverArtUrl}
+                          src={coverArtUrl}
                           alt={`${entry.title} cover`}
                           referrerPolicy="no-referrer"
                           className="h-full w-full object-cover"

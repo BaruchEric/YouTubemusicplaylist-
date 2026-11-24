@@ -45,7 +45,7 @@ import {
   summarizeIntegrityIssues,
   type TrackIntegrityScanResult,
 } from './utils/audioIntegrity';
-import { computeAudioHash, extractLocalTrack, isAudioFile } from './utils/audioMetadata';
+import { computeAudioHash, extractLocalTrack, isAudioFile, isSha256Hash } from './utils/audioMetadata';
 import {
   clearAllAudioBlobs,
   deleteAudioBlobs,
@@ -180,6 +180,10 @@ export default function App() {
   useEffect(() => {
     tracksRef.current = tracks;
   }, [tracks]);
+  const playlistsRef = useRef<Playlist[]>(playlists);
+  useEffect(() => {
+    playlistsRef.current = playlists;
+  }, [playlists]);
 
   const handlePlayRecorded = useCallback(
     (event: {
@@ -253,7 +257,8 @@ export default function App() {
             trackNumber: target.trackNumber ?? parsed.trackNumber,
             duration: parsed.duration > 0 ? parsed.duration : target.duration,
             coverArtUrl: target.coverArtUrl || parsed.coverArtUrl,
-            contentHash: target.contentHash || parsed.contentHash,
+            // Prefer the SHA-256 of the downloaded bytes; older Drive stubs stored Drive's MD5 here
+            contentHash: parsed.contentHash || target.contentHash,
           };
         } catch {
           // Keep existing Drive stub metadata if binary tag parsing fails
@@ -268,7 +273,13 @@ export default function App() {
     [refreshDeviceCacheStats]
   );
 
+  const hasCachedAudio = useCallback(
+    (fileKey: string) => storedAudioKeysRef.current.has(fileKey),
+    []
+  );
+
   const audioPlayer = useAudioPlayer(tracks, fileMapRef, {
+    hasCachedAudio,
     onPlayRecorded: handlePlayRecorded,
     onTrackCachedFromDrive: ({ trackId, blob }) => {
       void handleCacheDriveTrackAudio(trackId, blob);
@@ -543,9 +554,15 @@ export default function App() {
         const now = Date.now();
         const existingByKey = new Map<string, LocalTrack>();
         const existingByNameSize = new Map<string, LocalTrack>();
+        // Drive tracks keep a gdrive:: fileKey but sync rewrites relativePath to this device's
+        // mapped folder, so match on path + size too or a scan re-imports them as new tracks.
+        const existingByPathSize = new Map<string, LocalTrack>();
         tracksRef.current.forEach((t) => {
           existingByKey.set(t.fileKey, t);
           existingByNameSize.set(`${t.fileName.toLowerCase()}::${t.fileSize}`, t);
+          if (t.fileSize > 0) {
+            existingByPathSize.set(`${t.relativePath.toLowerCase()}::${t.fileSize}`, t);
+          }
         });
 
         const seenKeys = new Set<string>();
@@ -567,17 +584,22 @@ export default function App() {
                 !storedAudioKeysRef.current.has(nameSizeCandidate!.fileKey)));
           const existing =
             existingByKey.get(computedFileKey) ??
+            existingByPathSize.get(computedFileKey) ??
             (canRelinkByNameSize ? nameSizeCandidate : undefined);
           const targetKey = existing ? existing.fileKey : computedFileKey;
 
           seenKeys.add(targetKey);
           fileMapRef.current.set(targetKey, file);
-          newlyCachedKeys.push(targetKey);
-          // Persist audio blob in IndexedDB so playback survives reloads
-          void saveAudioBlob(targetKey, file);
+          // Persist audio blob in IndexedDB so playback survives reloads. Skip keys already
+          // stored (the key includes the byte size): auto-watch rescans every 30 s and would
+          // otherwise rewrite the whole library into IndexedDB on every tick.
+          if (!storedAudioKeysRef.current.has(targetKey)) {
+            newlyCachedKeys.push(targetKey);
+            void saveAudioBlob(targetKey, file);
+          }
 
           if (existing) {
-            let contentHash = existing.contentHash ?? null;
+            let contentHash = isSha256Hash(existing.contentHash) ? existing.contentHash : null;
             if (!contentHash) {
               try {
                 contentHash = await computeAudioHash(file);
@@ -597,6 +619,10 @@ export default function App() {
               contentHash,
               lastSeenAt: now,
               isMissingOnDevice: false,
+              // A Drive track whose local copy was just scanned now has its audio on this device
+              ...(existing.driveFileId
+                ? { cachedOnDeviceAt: existing.cachedOnDeviceAt ?? now }
+                : {}),
             });
           } else {
             try {
@@ -1050,7 +1076,7 @@ export default function App() {
   // Compute missing SHA-256 content hashes for previously scanned tracks cached in memory/IndexedDB
   const handleComputeMissingHashes = useCallback(async () => {
     if (isHashingDuplicates) return;
-    const targets = tracksRef.current.filter((t) => t.fileSize > 0 && !t.contentHash);
+    const targets = tracksRef.current.filter((t) => t.fileSize > 0 && !isSha256Hash(t.contentHash));
     if (targets.length === 0) return;
 
     setIsHashingDuplicates(true);
@@ -1764,7 +1790,10 @@ export default function App() {
         return out;
       };
 
-      let addedPlaylists = 0;
+      // Count outside the updater: React runs queued updaters during the next render, so a
+      // counter incremented inside setPlaylists is still 0 when the toast below is built.
+      const knownPlaylistIds = new Set(playlistsRef.current.map((p) => p.id));
+      const addedPlaylists = backup.playlists.filter((p) => !knownPlaylistIds.has(p.id)).length;
       setPlaylists((prev) => {
         const existingById = new Map(prev.map((p) => [p.id, p]));
         const next = [...prev];
@@ -1786,7 +1815,6 @@ export default function App() {
               };
             }
           } else {
-            addedPlaylists += 1;
             next.unshift({
               ...incomingPl,
               trackIds: remappedTrackIds,
@@ -1827,7 +1855,9 @@ export default function App() {
         setDevices((prev) => mergeDeviceProfiles(prev, backup.devices ?? [], currentDeviceRef.current));
       }
       if (backup.folderMappings && backup.folderMappings.length > 0) {
-        setFolderMappings((prev) => mergeFolderMappings(prev, backup.folderMappings ?? [], true));
+        setFolderMappings((prev) =>
+          mergeFolderMappings(prev, backup.folderMappings ?? [], true, currentDeviceRef.current.id)
+        );
       }
 
       pushToast({
@@ -1987,7 +2017,8 @@ export default function App() {
           ? mergeFolderMappings(
               folderMappingsRef.current,
               payload.manifest.folderMappings,
-              true
+              true,
+              currentDeviceRef.current.id
             )
           : folderMappingsRef.current;
 

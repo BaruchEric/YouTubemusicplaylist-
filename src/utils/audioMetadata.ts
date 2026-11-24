@@ -535,6 +535,14 @@ function bufferToHex(buffer: ArrayBuffer): string {
  * Hashes the complete file for files <= 16 MB; for larger lossless files,
  * hashes head (4 MB) + mid (2 MB) + tail (4 MB) + exact byte length.
  */
+/**
+ * True for a hex SHA-256 digest as produced by computeAudioHash. Older Drive stubs stored
+ * Drive's 32-char MD5 in contentHash, which never matches a local file's SHA-256.
+ */
+export function isSha256Hash(value: string | null | undefined): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value);
+}
+
 export async function computeAudioHash(blob: Blob): Promise<string | null> {
   if (typeof crypto === 'undefined' || !crypto.subtle || blob.size === 0) {
     return null;

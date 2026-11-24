@@ -124,13 +124,31 @@ function sanitizeConfidence(raw: unknown): 'high' | 'medium' | 'low' {
   return 'medium';
 }
 
+function readTrackArray<T>(body: unknown): Array<Partial<T>> {
+  const raw = (body as { tracks?: unknown } | null | undefined)?.tracks;
+  if (!Array.isArray(raw)) return [];
+  // Drop null / primitive entries so the field mapping below cannot throw outside try/catch
+  return raw.filter(
+    (t): t is Partial<T> => typeof t === 'object' && t !== null && !Array.isArray(t)
+  );
+}
+
+type AsyncHandler = (req: express.Request, res: express.Response) => Promise<void>;
+
+// Express 4 does not catch rejected promises from async handlers; an escaped rejection
+// crashes Node 22. Forward any error to Express's error handler instead.
+function asyncRoute(handler: AsyncHandler): express.RequestHandler {
+  return (req, res, next) => {
+    handler(req, res).catch(next);
+  };
+}
+
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
 
-  app.post('/api/metadata/suggest', async (req, res) => {
-    const body = req.body as { tracks?: TrackLookupInput[] } | undefined;
-    const tracks = Array.isArray(body?.tracks) ? body.tracks : [];
+  app.post('/api/metadata/suggest', asyncRoute(async (req, res) => {
+    const tracks = readTrackArray<TrackLookupInput>(req.body);
 
     if (tracks.length === 0) {
       res.status(400).json({ error: 'Provide at least one track to look up.' });
@@ -280,11 +298,10 @@ async function startServer() {
 
       res.status(statusCode).json({ error: friendlyMessage });
     }
-  });
+  }));
 
-  app.post('/api/genres/classify', async (req, res) => {
-    const body = req.body as { tracks?: GenreClassifyInput[] } | undefined;
-    const tracks = Array.isArray(body?.tracks) ? body.tracks : [];
+  app.post('/api/genres/classify', asyncRoute(async (req, res) => {
+    const tracks = readTrackArray<GenreClassifyInput>(req.body);
 
     if (tracks.length === 0) {
       res.status(400).json({ error: 'Provide at least one track to classify.' });
@@ -434,7 +451,7 @@ async function startServer() {
 
       res.status(statusCode).json({ error: friendlyMessage });
     }
-  });
+  }));
 
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');

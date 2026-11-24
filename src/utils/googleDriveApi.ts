@@ -1403,7 +1403,9 @@ export function buildTrackStubFromDriveAudio(
     duration: 0,
     format: ext,
     fileSize: file.size,
-    contentHash: file.md5Checksum ?? null,
+    // contentHash holds a SHA-256 of the bytes; Drive only offers MD5, so leave it unset
+    // until the audio is cached and hashed (duplicate detection falls back to size until then)
+    contentHash: null,
     coverArtUrl: null,
     addedAt: modifiedMs,
     lastSeenAt: Date.now(),

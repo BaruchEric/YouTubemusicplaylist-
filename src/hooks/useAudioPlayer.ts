@@ -183,7 +183,8 @@ function readSavedPlayHistory(): PlayHistoryEntry[] {
           typeof item.trackId === 'string' &&
           typeof item.title === 'string'
       )
-      .slice(0, MAX_PLAY_HISTORY_ENTRIES);
+      .slice(0, MAX_PLAY_HISTORY_ENTRIES)
+      .map((item) => (item.coverArtUrl ? { ...item, coverArtUrl: null } : item));
   } catch {
     return [];
   }
@@ -204,6 +205,8 @@ export function useAudioPlayer(
       fileKey: string;
       blob: Blob;
     }) => void;
+    /** True when the audio for this fileKey is persisted in the IndexedDB device cache */
+    hasCachedAudio?: (fileKey: string) => boolean;
   }
 ) {
   // Dual-deck HTML5 Audio elements for seamless overlapping crossfades
@@ -244,6 +247,17 @@ export function useAudioPlayer(
   useEffect(() => {
     onTrackCachedFromDriveRef.current = options?.onTrackCachedFromDrive;
   }, [options?.onTrackCachedFromDrive]);
+  const hasCachedAudioRef = useRef(options?.hasCachedAudio);
+  useEffect(() => {
+    hasCachedAudioRef.current = options?.hasCachedAudio;
+  }, [options?.hasCachedAudio]);
+
+  // fileMapRef only holds blobs touched this session; after a reload the audio lives in IndexedDB
+  const hasLocalAudio = useCallback(
+    (fileKey: string) =>
+      fileMapRef.current.has(fileKey) || Boolean(hasCachedAudioRef.current?.(fileKey)),
+    [fileMapRef]
+  );
 
   const [playStats, setPlayStats] = useState<Record<string, TrackPlayStats>>(() =>
     readSavedPlayStats()
@@ -273,7 +287,13 @@ export function useAudioPlayer(
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(PLAY_HISTORY_STORAGE_KEY, JSON.stringify(playHistory));
+      // Cover art is a ~10 KB data URL per entry; 2000 entries would blow the ~5 MB
+      // localStorage quota and silently stop every later write. The UI reads covers
+      // from the track map instead.
+      const compact = playHistory.map((entry) =>
+        entry.coverArtUrl ? { ...entry, coverArtUrl: null } : entry
+      );
+      window.localStorage.setItem(PLAY_HISTORY_STORAGE_KEY, JSON.stringify(compact));
     } catch {
       // Ignore storage quota errors
     }
@@ -559,7 +579,13 @@ export function useAudioPlayer(
         return null;
       } finally {
         analyzingKeysRef.current.delete(track.fileKey);
-        if (stateRef.current.activeTrackId === track.id) {
+        // Clear the flag even if the user skipped away mid-analysis; otherwise the
+        // indicator sticks on the next track when that track's loudness is already cached.
+        const activeId = stateRef.current.activeTrackId;
+        const activeTrack = activeId
+          ? tracksRef.current.find((t) => t.id === activeId)
+          : undefined;
+        if (!activeTrack || !analyzingKeysRef.current.has(activeTrack.fileKey)) {
           setState((prev) =>
             prev.isAnalyzingLoudness ? { ...prev, isAnalyzingLoudness: false } : prev
           );
@@ -879,6 +905,11 @@ export function useAudioPlayer(
 
       const seq = ++loadSeqRef.current;
 
+      // Create and resume the Web Audio graph before the first await. Safari only lets an
+      // AudioContext start inside the click's call stack; after the IndexedDB / Drive awaits
+      // below it would be created suspended and the decks would play silently.
+      void ensureWebAudioGraph();
+
       const resolvedQueue =
         nextQueueIds && nextQueueIds.length > 0
           ? nextQueueIds
@@ -957,6 +988,14 @@ export function useAudioPlayer(
           driveFetchError =
             'Song is stored in Google Drive. Connect Google Drive in Import & Export to cache it to this device for playback.';
         }
+      }
+
+      // A superseded Drive fetch leaves isFetchingFromDrive set (its finally only clears it
+      // for the current request), so clear it here when this request has audio to play.
+      if (blob || preloadedMatch) {
+        setState((prev) =>
+          prev.isFetchingFromDrive ? { ...prev, isFetchingFromDrive: false } : prev
+        );
       }
 
       // 2. If no local audio blob exists (and not preloaded), fall back cleanly to embedded YouTube player if matched
@@ -1220,19 +1259,14 @@ export function useAudioPlayer(
     (ids: string[], mode: ShuffleMode, pinFirstId?: string | null): string[] => {
       if (mode === 'smart') {
         const lookup = buildTrackLookup();
-        return buildSmartShuffleOrder(
-          ids,
-          lookup,
-          (fileKey) => fileMapRef.current.has(fileKey),
-          pinFirstId
-        );
+        return buildSmartShuffleOrder(ids, lookup, hasLocalAudio, pinFirstId);
       }
       if (mode === 'standard') {
         return buildStandardShuffleOrder(ids, pinFirstId);
       }
       return Array.from(new Set(ids));
     },
-    [buildTrackLookup, fileMapRef]
+    [buildTrackLookup, hasLocalAudio]
   );
 
   const resolveNextTrackId = useCallback((fromAutoEnded: boolean): string | null => {
@@ -1369,7 +1403,12 @@ export function useAudioPlayer(
       if (resolvedMode === 'off') {
         const firstPlayable = orderedQueue.find((id) => {
           const t = tracksRef.current.find((item) => item.id === id);
-          return Boolean(t && (fileMapRef.current.has(t.fileKey) || t.youtubeVideoId));
+          return Boolean(
+            t &&
+              (hasLocalAudio(t.fileKey) ||
+                t.youtubeVideoId ||
+                (t.driveFileId && getDriveAccessToken()))
+          );
         });
         if (firstPlayable) startId = firstPlayable;
       }
@@ -1392,7 +1431,7 @@ export function useAudioPlayer(
 
       void loadAndPlayId(startId, orderedQueue, { crossfadeDurationSec: manualFadeSec });
     },
-    [fileMapRef, getActiveDeck, loadAndPlayId, orderQueueForMode, recordTrackOutcome]
+    [hasLocalAudio, getActiveDeck, loadAndPlayId, orderQueueForMode, recordTrackOutcome]
   );
 
   const nextTrack = useCallback(

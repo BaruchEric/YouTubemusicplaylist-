@@ -6,7 +6,7 @@ import { inferTrackGenre } from './genreInference';
  * when exact-genre candidates are exhausted or sparse.
  */
 const RELATED_GENRES: Record<string, string[]> = {
-  Electronic: ['Ambient / Lo-Fi', 'Pop', 'Hip-Hop / Rap'],
+  Electronic: ['Ambient / Lo-Fi', 'Pop', 'Hip-Hop / Rap', 'Funk / Disco'],
   'Ambient / Lo-Fi': ['Electronic', 'Jazz', 'Classical', 'Soundtrack / Score'],
   'Hip-Hop / Rap': ['R&B / Soul', 'Electronic', 'Pop'],
   'R&B / Soul': ['Hip-Hop / Rap', 'Jazz', 'Pop'],
@@ -17,7 +17,14 @@ const RELATED_GENRES: Record<string, string[]> = {
   Classical: ['Soundtrack / Score', 'Ambient / Lo-Fi', 'Jazz'],
   Pop: ['Indie / Alternative', 'R&B / Soul', 'Electronic'],
   'Country / Folk': ['Indie / Alternative', 'Rock'],
-  'Latin / Reggae': ['Pop', 'R&B / Soul', 'Hip-Hop / Rap'],
+  // Keys must match the canonical genres in genreInference.ts / server.ts exactly
+  'Latin / Afrobeats': ['Pop', 'R&B / Soul', 'Hip-Hop / Rap', 'Reggae / Dub'],
+  'Reggae / Dub': ['Latin / Afrobeats', 'R&B / Soul', 'Hip-Hop / Rap'],
+  'Funk / Disco': ['R&B / Soul', 'Electronic', 'Pop', 'Jazz'],
+  Blues: ['Jazz', 'Rock', 'R&B / Soul', 'Country / Folk'],
+  'Punk / Hardcore': ['Rock', 'Metal', 'Indie / Alternative'],
+  'World / Global': ['Latin / Afrobeats', 'Reggae / Dub', 'Acoustic / Instrumental'],
+  'Acoustic / Instrumental': ['Country / Folk', 'Classical', 'Ambient / Lo-Fi'],
   'Soundtrack / Score': ['Classical', 'Ambient / Lo-Fi', 'Electronic'],
   'Podcast / Spoken': ['Ambient / Lo-Fi'],
 };

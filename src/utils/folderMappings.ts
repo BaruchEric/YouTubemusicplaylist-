@@ -215,8 +215,21 @@ export function mergeDeviceProfiles(
 export function mergeFolderMappings(
   localMappings: DriveFolderMapping[],
   remoteMappings: DriveFolderMapping[],
-  preferRemoteForConflicts = true
+  preferRemoteForConflicts = true,
+  /**
+   * This device's id. Only a device writes its own binding, so the local copy is never older
+   * than the one in a Drive manifest; keep it instead of letting the manifest revert it.
+   */
+  localDeviceId?: string
 ): DriveFolderMapping[] {
+  const localBindingsByFolder = new Map<string, DeviceFolderBinding>();
+  if (localDeviceId) {
+    for (const m of localMappings) {
+      const own = m?.deviceBindings?.[localDeviceId];
+      if (m?.driveFolderId && own) localBindingsByFolder.set(m.driveFolderId, own);
+    }
+  }
+
   const byDriveFolderId = new Map<string, DriveFolderMapping>();
 
   const seedList = preferRemoteForConflicts ? localMappings : remoteMappings;
@@ -244,6 +257,10 @@ export function mergeFolderMappings(
       };
       for (const [devId, binding] of Object.entries(incoming.deviceBindings ?? {})) {
         const prevBinding = mergedBindings[devId];
+        if (devId === localDeviceId && localBindingsByFolder.has(incoming.driveFolderId)) {
+          mergedBindings[devId] = localBindingsByFolder.get(incoming.driveFolderId)!;
+          continue;
+        }
         if (
           !prevBinding ||
           preferRemoteForConflicts ||

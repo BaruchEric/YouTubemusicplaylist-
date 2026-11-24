@@ -278,15 +278,21 @@ export function evaluateTrackMetadataIntegrity(track: LocalTrack): IntegrityIssu
   const issues: IntegrityIssue[] = [];
   const fmt = (track.format || '').toUpperCase();
   const isLocalAudio = !NON_LOCAL_FORMATS.has(fmt);
+  // Duration is unknown by design for YouTube/list placeholders and for Drive songs whose
+  // audio has not been cached yet (the stub is built from Drive file metadata only).
+  const durationNotReadYet =
+    !isLocalAudio || (Boolean(track.driveFileId) && !track.cachedOnDeviceAt);
 
   // 1. Incomplete / missing duration metadata
   if (!Number.isFinite(track.duration) || track.duration <= 0) {
-    issues.push({
-      code: 'missing-duration',
-      severity: 'error',
-      label: 'Missing duration',
-      detail: 'Duration metadata is 0:00 or missing from file header',
-    });
+    if (!durationNotReadYet) {
+      issues.push({
+        code: 'missing-duration',
+        severity: 'error',
+        label: 'Missing duration',
+        detail: 'Duration metadata is 0:00 or missing from file header',
+      });
+    }
   } else if (track.duration < 3) {
     issues.push({
       code: 'implausible-duration',

@@ -43,8 +43,13 @@ const DEFAULT_STATE: PersistedLibraryState = {
 
 const LS_FALLBACK_KEY = 'cratesync_library_v1';
 
+// One shared connection. Opening a new one per call leaked a connection on every save,
+// and an unclosed connection blocks future version upgrades.
+let dbPromise: Promise<IDBDatabase> | null = null;
+
 function openDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
     if (typeof indexedDB === 'undefined') {
       reject(new Error('IndexedDB unavailable'));
       return;
@@ -62,9 +67,24 @@ function openDB(): Promise<IDBDatabase> {
         db.createObjectStore(STORES.BLOBS);
       }
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      // Let another tab upgrade the schema, then reopen lazily on the next call
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      db.onclose = () => {
+        dbPromise = null;
+      };
+      resolve(db);
+    };
     req.onerror = () => reject(req.error);
   });
+  dbPromise.catch(() => {
+    dbPromise = null;
+  });
+  return dbPromise;
 }
 
 export async function loadLibraryState(): Promise<PersistedLibraryState> {
@@ -97,6 +117,8 @@ export async function saveLibraryState(state: PersistedLibraryState): Promise<vo
       tx.objectStore(STORES.STATE).put(state, 'main');
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
+      // A quota failure at commit fires abort without error; without this the save never settles
+      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB transaction aborted'));
     });
   } catch {
     try {
@@ -115,6 +137,7 @@ export async function saveAudioBlob(fileKey: string, file: Blob): Promise<void> 
       tx.objectStore(STORES.BLOBS).put(file, fileKey);
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
     });
   } catch {
     // Ignore quota / unavailable IndexedDB
@@ -164,6 +187,7 @@ export async function deleteAudioBlobs(fileKeys: string[]): Promise<void> {
       }
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
     });
   } catch {
     // Ignore
@@ -216,6 +240,7 @@ export async function clearAllAudioBlobs(): Promise<void> {
       tx.objectStore(STORES.BLOBS).clear();
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
     });
   } catch {
     // Ignore
@@ -236,6 +261,7 @@ export async function saveDirectoryHandle(
       }
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
     });
   } catch {
     // Ignore when IndexedDB or handle structured clone is unsupported

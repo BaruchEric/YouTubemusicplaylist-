@@ -21,6 +21,7 @@ import {
   summarizeIntegrityIssues,
   type TrackIntegrityScanResult,
 } from '../utils/audioIntegrity';
+import { isSha256Hash } from '../utils/audioMetadata';
 import { hasValidYearTag, isTrackMissingGenre } from '../utils/dashboardSmartFilters';
 import { exportCatalogToCSV, findDuplicateGroups } from '../utils/duplicateDetector';
 import type { InferredGenreResult } from '../utils/genreInference';
@@ -180,7 +181,7 @@ export function DashboardQuickActionsMenu({
         }
       }
 
-      if (track.fileSize > 0 && !track.contentHash) {
+      if (track.fileSize > 0 && !isSha256Hash(track.contentHash)) {
         unhashedCount += 1;
       }
     }
