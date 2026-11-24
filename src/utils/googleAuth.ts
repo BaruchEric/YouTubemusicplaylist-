@@ -1,4 +1,5 @@
-import { getApp, getApps, initializeApp } from 'firebase/app';
+import { getApp, getApps, initializeApp, type FirebaseApp } from 'firebase/app';
+import { initializeAppCheck, ReCaptchaEnterpriseProvider, type AppCheck } from 'firebase/app-check';
 import {
   getAuth,
   GoogleAuthProvider,
@@ -20,6 +21,25 @@ export const GOOGLE_DRIVE_SCOPES = [
 ] as const;
 
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+
+/**
+ * Firebase App Check: each Firebase Auth request carries a token showing it came from this
+ * app, attested by the reCAPTCHA Enterprise site key in firebase-applet-config.json. It needs
+ * a browser (reCAPTCHA loads a script), and it is skipped when the key is empty. Calling it
+ * again with the same key, as a hot reload does, returns the instance already running.
+ * The Firebase project does not enforce App Check yet, so until it does these tokens only
+ * show up in its App Check metrics.
+ */
+export const appCheck: AppCheck | null = startAppCheck(app, firebaseConfig.recaptchaSiteKey);
+
+function startAppCheck(firebaseApp: FirebaseApp, siteKey: string): AppCheck | null {
+  if (typeof window === 'undefined' || typeof document === 'undefined' || !siteKey) return null;
+  return initializeAppCheck(firebaseApp, {
+    provider: new ReCaptchaEnterpriseProvider(siteKey),
+    isTokenAutoRefreshEnabled: true,
+  });
+}
+
 export const auth = getAuth(app);
 
 // Strictly in-memory OAuth access token cache — never written to localStorage or sessionStorage.

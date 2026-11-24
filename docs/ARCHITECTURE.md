@@ -67,6 +67,8 @@ Implemented across [`src/utils/googleAuth.ts`](../src/utils/googleAuth.ts), [`sr
 1. **Authentication**: Uses Firebase Auth `signInWithPopup` with `GoogleAuthProvider` requesting two least-privilege scopes:
    - `https://www.googleapis.com/auth/drive.readonly` (browse, search, download audio and playlist files)
    - `https://www.googleapis.com/auth/drive.file` (create/update CrateSync backups and uploaded audio)
+
+   Firebase App Check runs beside it: `googleAuth.ts` starts App Check with a `ReCaptchaEnterpriseProvider` for the `recaptchaSiteKey` in `firebase-applet-config.json`, so Firebase Auth requests carry an attestation token. The project does not enforce App Check yet; enforcing it for Authentication would reject sign-in requests that lack a token.
 2. **Canonical Manifest**: Stored as `cratesync-source-of-truth.json` (`schemaVersion: 1`) inside the `CrateSync Library` Drive folder. Contains tracks, playlists, smart playlists, sync history, `devices`, `folderMappings`, and `folderMappingTombstones` (optional; manifests written before it existed parse with none). Both push paths download the current manifest and merge its devices, mappings and tombstones into the local state before writing, so a device that had not pulled cannot erase other devices' bindings or deletions. Uploads of 5 MB or less use one multipart request; larger files, including big manifests, use a resumable upload that resumes from the byte the session reports after a dropped connection, or starts a fresh session when that count is unreadable.
 3. **Path Translation & Folder Bindings**:
    - Paths are normalized across Windows/macOS/Linux/mobile (`normalizeFolderPath`).
