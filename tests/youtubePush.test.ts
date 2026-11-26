@@ -4,6 +4,7 @@ import { YouTubeApiError, type YouTubeApi, type YouTubeFailure, type YouTubePlay
 import {
   describeYouTubePush,
   estimateYouTubePush,
+  planYouTubeOrder,
   planYouTubePush,
   playlistAfterPush,
   playlistVideoIds,
@@ -36,9 +37,17 @@ interface FakeYouTube {
 
 /**
  * A YouTube account with at most one playlist. `failOn` maps a logged call such as
- * "insert vid-2" to the errors its next attempts throw, first attempt first.
+ * "insert vid-2" or "move vid-2" to the errors its next attempts throw, first attempt first.
+ * With `sortedByYouTube` the playlist is not in manual order: YouTube refuses every place
+ * a caller asks for, as it does for a playlist sorted by date.
  */
-function fakeYouTube(options: { remote?: YouTubePlaylistItem[]; failOn?: Record<string, YouTubeApiError[]> } = {}): FakeYouTube {
+function fakeYouTube(
+  options: {
+    remote?: YouTubePlaylistItem[];
+    failOn?: Record<string, YouTubeApiError[]>;
+    sortedByYouTube?: boolean;
+  } = {}
+): FakeYouTube {
   let items = [...(options.remote ?? [])];
   const failOn = new Map(Object.entries(options.failOn ?? {}).map(([call, errors]) => [call, [...errors]]));
   const log: string[] = [];
@@ -59,10 +68,23 @@ function fakeYouTube(options: { remote?: YouTubePlaylistItem[]; failOn?: Record<
         attempt(`list ${playlistId}`);
         return [...items];
       },
-      async insertPlaylistItem(playlistId, videoId) {
+      async insertPlaylistItem(playlistId, videoId, position) {
         attempt(`insert ${videoId}`);
-        items.push({ itemId: `item-${videoId}-${items.length}`, videoId });
+        if (position !== undefined && options.sortedByYouTube) throw fail('not-manual-order');
+        if (position !== undefined && position > items.length) throw fail('bad-position');
+        const entry = { itemId: `item-${videoId}-${items.length}`, videoId };
+        items.splice(position ?? items.length, 0, entry);
         void playlistId;
+      },
+      // As on YouTube, position is where the entry sits once it has moved.
+      async movePlaylistItem({ itemId, videoId, position }) {
+        attempt(`move ${videoId}`);
+        if (options.sortedByYouTube) throw fail('not-manual-order');
+        const from = items.findIndex((entry) => entry.itemId === itemId);
+        const [entry] = from === -1 ? [] : items.splice(from, 1);
+        if (!entry) throw fail('item-missing');
+        if (position > items.length) throw fail('bad-position');
+        items.splice(position, 0, entry);
       },
       async deletePlaylistItem(itemId) {
         attempt(`delete ${itemId}`);
@@ -126,6 +148,57 @@ describe('planYouTubePush', () => {
   });
 });
 
+describe('planYouTubeOrder', () => {
+  test('moves nothing when YouTube has the songs in playlist order', () => {
+    const plan = planYouTubeOrder({
+      wanted: ['vid-a', 'vid-b', 'vid-c'],
+      remote: ['vid-a', 'vid-b', 'vid-c'],
+    });
+    expect(plan.moves).toEqual([]);
+    expect(plan.stays).toEqual(['vid-a', 'vid-b', 'vid-c']);
+  });
+
+  test('moves one song when one song changed place', () => {
+    const plan = planYouTubeOrder({
+      wanted: ['vid-e', 'vid-a', 'vid-b', 'vid-c', 'vid-d'],
+      remote: ['vid-a', 'vid-b', 'vid-c', 'vid-d', 'vid-e'],
+    });
+    expect(plan.moves).toEqual(['vid-e']);
+    expect(plan.stays).toEqual(['vid-a', 'vid-b', 'vid-c', 'vid-d']);
+  });
+
+  test('keeps the longest run that is already in order and lists the rest in playlist order', () => {
+    const plan = planYouTubeOrder({
+      wanted: ['vid-c', 'vid-d', 'vid-b', 'vid-a'],
+      remote: ['vid-a', 'vid-b', 'vid-c', 'vid-d'],
+    });
+    expect(plan.stays).toEqual(['vid-c', 'vid-d']);
+    expect(plan.moves).toEqual(['vid-b', 'vid-a']);
+  });
+
+  test('moves all but one song of a reversed playlist', () => {
+    const plan = planYouTubeOrder({
+      wanted: ['vid-d', 'vid-c', 'vid-b', 'vid-a'],
+      remote: ['vid-a', 'vid-b', 'vid-c', 'vid-d'],
+    });
+    expect(plan.stays).toHaveLength(1);
+    expect(plan.moves).toHaveLength(3);
+  });
+
+  test('looks past songs the playlist does not hold and past second copies', () => {
+    const plan = planYouTubeOrder({
+      wanted: ['vid-a', 'vid-b'],
+      remote: ['vid-by-hand', 'vid-a', 'vid-b', 'vid-a'],
+    });
+    expect(plan.moves).toEqual([]);
+  });
+
+  test('leaves out a wanted song YouTube does not have yet', () => {
+    const plan = planYouTubeOrder({ wanted: ['vid-new', 'vid-a'], remote: ['vid-a'] });
+    expect(plan).toEqual({ stays: ['vid-a'], moves: [] });
+  });
+});
+
 describe('estimateYouTubePush', () => {
   test('a playlist never pushed sends every matched song and creates the playlist', () => {
     const playlist = makePlaylist({ id: 'p' });
@@ -136,10 +209,31 @@ describe('estimateYouTubePush', () => {
       matchedCount: 1,
       sendCount: 1,
       removeCount: 0,
+      moveCount: 0,
       unmatchedCount: 1,
       quotaUnits: 100,
       days: 1,
     });
+  });
+
+  test('counts the songs that changed place since the last push', () => {
+    const playlist = makePlaylist({
+      id: 'p',
+      youtubePlaylistUrl: PLAYLIST_URL,
+      youtubePush: {
+        playlistId: 'PL-linked-playlist',
+        videoIds: ['vid-a', 'vid-b', 'vid-c'],
+        pushedAt: 1,
+      },
+    });
+    const estimate = estimateYouTubePush(playlist, [
+      matched('c', 'vid-c'),
+      matched('a', 'vid-a'),
+      matched('b', 'vid-b'),
+    ]);
+    expect(estimate.sendCount).toBe(0);
+    expect(estimate.moveCount).toBe(1);
+    expect(estimate.quotaUnits).toBe(50);
   });
 
   test('a playlist pushed before counts only the songs added and removed since', () => {
@@ -189,6 +283,8 @@ describe('pushPlaylistToYouTube', () => {
     });
 
     expect(youtube.log).toEqual(['create Road Mix', 'insert vid-a', 'insert vid-c']);
+    expect(youtube.videos()).toEqual(['vid-a', 'vid-c']);
+    expect(outcome.order).toEqual({ state: 'in-order' });
     expect(outcome.playlist).toEqual({ id: 'PL-created-playlist', created: true });
     expect(outcome.inserted).toEqual(['vid-a', 'vid-c']);
     expect(outcome.stopped).toBeNull();
@@ -383,12 +479,261 @@ describe('pushPlaylistToYouTube', () => {
   });
 });
 
+describe('pushPlaylistToYouTube, song order', () => {
+  /** A playlist linked to the fake's playlist, with an earlier push of these videos on record. */
+  function pushedBefore(videoIds: string[]) {
+    return makePlaylist({
+      id: 'p',
+      youtubePlaylistUrl: PLAYLIST_URL,
+      youtubePush: { playlistId: 'PL-linked-playlist', videoIds, pushedAt: 1 },
+    });
+  }
+
+  test('puts a newly matched song where it sits in the playlist', async () => {
+    const youtube = fakeYouTube({ remote: [item('vid-a'), item('vid-c')] });
+
+    const outcome = await pushPlaylistToYouTube({
+      api: youtube.api,
+      playlist: pushedBefore(['vid-a', 'vid-c']),
+      tracks: [matched('a', 'vid-a'), matched('b', 'vid-b'), matched('c', 'vid-c')],
+      now: 2,
+    });
+
+    expect(youtube.log).toEqual(['list PL-linked-playlist', 'insert vid-b']);
+    expect(youtube.videos()).toEqual(['vid-a', 'vid-b', 'vid-c']);
+    expect(outcome.moved).toEqual([]);
+    expect(outcome.order).toEqual({ state: 'in-order' });
+    expect(outcome.record?.videoIds).toEqual(['vid-a', 'vid-b', 'vid-c']);
+  });
+
+  test('puts a new first song at the top', async () => {
+    const youtube = fakeYouTube({ remote: [item('vid-b'), item('vid-c')] });
+
+    await pushPlaylistToYouTube({
+      api: youtube.api,
+      playlist: pushedBefore(['vid-b', 'vid-c']),
+      tracks: [matched('a', 'vid-a'), matched('b', 'vid-b'), matched('c', 'vid-c')],
+      now: 2,
+    });
+
+    expect(youtube.videos()).toEqual(['vid-a', 'vid-b', 'vid-c']);
+  });
+
+  test('moves a song that changed place in the playlist', async () => {
+    const youtube = fakeYouTube({ remote: [item('vid-a'), item('vid-b'), item('vid-c')] });
+    const progress: YouTubePushProgress[] = [];
+
+    const outcome = await pushPlaylistToYouTube({
+      api: youtube.api,
+      playlist: pushedBefore(['vid-a', 'vid-b', 'vid-c']),
+      tracks: [matched('c', 'vid-c'), matched('a', 'vid-a'), matched('b', 'vid-b')],
+      now: 2,
+      onProgress: (step) => progress.push(step),
+    });
+
+    expect(youtube.log).toEqual(['list PL-linked-playlist', 'move vid-c']);
+    expect(youtube.videos()).toEqual(['vid-c', 'vid-a', 'vid-b']);
+    expect(outcome.moved).toEqual(['vid-c']);
+    expect(outcome.order).toEqual({ state: 'in-order' });
+    expect(outcome.stopped).toBeNull();
+    expect(progress.at(-1)).toEqual({ step: 'ordering', done: 1, total: 1 });
+    expect(outcome.record?.videoIds).toEqual(['vid-c', 'vid-a', 'vid-b']);
+  });
+
+  test('puts a reversed playlist in order', async () => {
+    const youtube = fakeYouTube({
+      remote: [item('vid-a'), item('vid-b'), item('vid-c'), item('vid-d')],
+    });
+
+    const outcome = await pushPlaylistToYouTube({
+      api: youtube.api,
+      playlist: pushedBefore(['vid-a', 'vid-b', 'vid-c', 'vid-d']),
+      tracks: [matched('d', 'vid-d'), matched('c', 'vid-c'), matched('b', 'vid-b'), matched('a', 'vid-a')],
+      now: 2,
+    });
+
+    expect(youtube.videos()).toEqual(['vid-d', 'vid-c', 'vid-b', 'vid-a']);
+    expect(outcome.moved).toHaveLength(3);
+  });
+
+  test('never moves a song somebody added on YouTube by hand', async () => {
+    const youtube = fakeYouTube({ remote: [item('vid-a'), item('vid-by-hand'), item('vid-b')] });
+
+    const outcome = await pushPlaylistToYouTube({
+      api: youtube.api,
+      playlist: pushedBefore(['vid-a', 'vid-b']),
+      tracks: [matched('b', 'vid-b'), matched('a', 'vid-a')],
+      now: 2,
+    });
+
+    expect(youtube.log).not.toContain('move vid-by-hand');
+    expect(youtube.videos().filter((videoId) => videoId !== 'vid-by-hand')).toEqual(['vid-b', 'vid-a']);
+    expect(youtube.videos()).toContain('vid-by-hand');
+    expect(outcome.moved).toHaveLength(1);
+    expect(outcome.leftAlone).toBe(1);
+  });
+
+  test('adds first, removes next and moves last', async () => {
+    const youtube = fakeYouTube({ remote: [item('vid-a'), item('vid-old'), item('vid-b')] });
+
+    const outcome = await pushPlaylistToYouTube({
+      api: youtube.api,
+      playlist: pushedBefore(['vid-a', 'vid-old', 'vid-b']),
+      tracks: [matched('b', 'vid-b'), matched('x', 'vid-x'), matched('a', 'vid-a')],
+      now: 2,
+    });
+
+    expect(youtube.log.map((call) => call.split(' ')[0])).toEqual(['list', 'insert', 'delete', 'move']);
+    expect(youtube.videos()).toEqual(['vid-b', 'vid-x', 'vid-a']);
+    expect(outcome.record?.videoIds).toEqual(['vid-b', 'vid-x', 'vid-a']);
+  });
+
+  test('leaves the order to YouTube when the playlist is not in manual order', async () => {
+    const youtube = fakeYouTube({
+      remote: [item('vid-c'), item('vid-a')],
+      sortedByYouTube: true,
+    });
+
+    const outcome = await pushPlaylistToYouTube({
+      api: youtube.api,
+      playlist: pushedBefore(['vid-c', 'vid-a']),
+      tracks: [matched('a', 'vid-a'), matched('b', 'vid-b'), matched('c', 'vid-c')],
+      now: 2,
+    });
+
+    // The first try names a place and is refused. The second leaves the place to YouTube.
+    expect(youtube.log).toEqual(['list PL-linked-playlist', 'insert vid-b', 'insert vid-b']);
+    expect(outcome.inserted).toEqual(['vid-b']);
+    expect(outcome.moved).toEqual([]);
+    expect(outcome.order).toEqual({ state: 'sorted-by-youtube' });
+    expect(outcome.stopped).toBeNull();
+  });
+
+  test('finds out at the first move that YouTube sorts the playlist, and stops moving', async () => {
+    const youtube = fakeYouTube({
+      remote: [item('vid-c'), item('vid-b'), item('vid-a')],
+      sortedByYouTube: true,
+    });
+
+    const outcome = await pushPlaylistToYouTube({
+      api: youtube.api,
+      playlist: pushedBefore(['vid-c', 'vid-b', 'vid-a']),
+      tracks: [matched('a', 'vid-a'), matched('b', 'vid-b'), matched('c', 'vid-c')],
+      now: 2,
+    });
+
+    expect(youtube.log.filter((call) => call.startsWith('move'))).toHaveLength(1);
+    expect(outcome.order).toEqual({ state: 'sorted-by-youtube' });
+    expect(outcome.stopped).toBeNull();
+  });
+
+  test('stops moving at the daily limit and counts the songs still out of place', async () => {
+    const youtube = fakeYouTube({
+      remote: [item('vid-a'), item('vid-b'), item('vid-c'), item('vid-d')],
+      failOn: { 'move vid-a': [fail('quota')] },
+    });
+
+    const outcome = await pushPlaylistToYouTube({
+      api: youtube.api,
+      playlist: pushedBefore(['vid-a', 'vid-b', 'vid-c', 'vid-d']),
+      tracks: [matched('c', 'vid-c'), matched('d', 'vid-d'), matched('b', 'vid-b'), matched('a', 'vid-a')],
+      now: 2,
+    });
+
+    expect(youtube.log).toEqual(['list PL-linked-playlist', 'move vid-b', 'move vid-a']);
+    expect(youtube.videos()).toEqual(['vid-a', 'vid-c', 'vid-d', 'vid-b']);
+    expect(outcome.moved).toEqual(['vid-b']);
+    expect(outcome.stopped?.failure).toBe('quota');
+    expect(outcome.order).toEqual({ state: 'out-of-order', left: 1 });
+    expect(outcome.record?.videoIds).toEqual(['vid-a', 'vid-c', 'vid-d', 'vid-b']);
+  });
+
+  test('carries on when a song to move is already gone from YouTube', async () => {
+    const youtube = fakeYouTube({
+      remote: [item('vid-a'), item('vid-b'), item('vid-c'), item('vid-d')],
+      failOn: { 'move vid-b': [fail('item-missing')] },
+    });
+
+    const outcome = await pushPlaylistToYouTube({
+      api: youtube.api,
+      playlist: pushedBefore(['vid-a', 'vid-b', 'vid-c', 'vid-d']),
+      tracks: [matched('c', 'vid-c'), matched('d', 'vid-d'), matched('b', 'vid-b'), matched('a', 'vid-a')],
+      now: 2,
+    });
+
+    expect(youtube.log).toEqual(['list PL-linked-playlist', 'move vid-b', 'move vid-a']);
+    expect(outcome.moved).toEqual(['vid-a']);
+    expect(outcome.stopped).toBeNull();
+  });
+
+  test('a push that stops while adding counts the songs it did not get to move', async () => {
+    const youtube = fakeYouTube({
+      remote: [item('vid-a'), item('vid-b')],
+      failOn: { 'insert vid-x': [fail('quota')] },
+    });
+
+    const outcome = await pushPlaylistToYouTube({
+      api: youtube.api,
+      playlist: pushedBefore(['vid-a', 'vid-b']),
+      tracks: [matched('b', 'vid-b'), matched('a', 'vid-a'), matched('x', 'vid-x')],
+      now: 2,
+    });
+
+    expect(youtube.log).toEqual(['list PL-linked-playlist', 'insert vid-x']);
+    expect(outcome.stopped?.failure).toBe('quota');
+    expect(outcome.order).toEqual({ state: 'out-of-order', left: 1 });
+  });
+
+  test('adds a song at the end when YouTube refuses its place, and leaves the order for the next push', async () => {
+    const youtube = fakeYouTube({
+      remote: [item('vid-a'), item('vid-c')],
+      failOn: { 'insert vid-b': [fail('bad-position')] },
+    });
+
+    const outcome = await pushPlaylistToYouTube({
+      api: youtube.api,
+      playlist: pushedBefore(['vid-a', 'vid-c']),
+      tracks: [matched('a', 'vid-a'), matched('b', 'vid-b'), matched('c', 'vid-c')],
+      now: 2,
+    });
+
+    expect(youtube.videos()).toEqual(['vid-a', 'vid-c', 'vid-b']);
+    expect(outcome.inserted).toEqual(['vid-b']);
+    expect(outcome.stopped).toBeNull();
+    expect(outcome.order).toEqual({ state: 'out-of-order', left: 1 });
+  });
+
+  test('stops between moves when the caller cancels', async () => {
+    const youtube = fakeYouTube({
+      remote: [item('vid-a'), item('vid-b'), item('vid-c'), item('vid-d')],
+    });
+    const controller = new AbortController();
+
+    const outcome = await pushPlaylistToYouTube({
+      api: youtube.api,
+      playlist: pushedBefore(['vid-a', 'vid-b', 'vid-c', 'vid-d']),
+      tracks: [matched('c', 'vid-c'), matched('d', 'vid-d'), matched('b', 'vid-b'), matched('a', 'vid-a')],
+      now: 2,
+      signal: controller.signal,
+      onProgress: (step) => {
+        if (step.step === 'ordering' && step.done === 1) controller.abort();
+      },
+    });
+
+    expect(outcome.moved).toEqual(['vid-b']);
+    expect(outcome.stopped?.failure).toBe('cancelled');
+    expect(outcome.order).toEqual({ state: 'out-of-order', left: 1 });
+  });
+});
+
 describe('describeYouTubePush', () => {
   function outcome(overrides: Partial<YouTubePushOutcome>): YouTubePushOutcome {
     return {
       playlist: { id: 'PL-linked-playlist', created: false },
       inserted: [],
       removed: [],
+      moved: [],
+      order: { state: 'in-order' },
       alreadyThere: 0,
       leftAlone: 0,
       unavailable: [],
@@ -403,6 +748,22 @@ describe('describeYouTubePush', () => {
     expect(describeYouTubePush(outcome({ inserted: ['a', 'b'], removed: ['c'] }))).toBe(
       'Added 2 songs and removed 1 song on YouTube.'
     );
+  });
+
+  test('says how many songs moved', () => {
+    expect(describeYouTubePush(outcome({ moved: ['a'] }))).toBe('Moved 1 song on YouTube.');
+    expect(
+      describeYouTubePush(outcome({ inserted: ['a'], removed: ['b'], moved: ['c', 'd'] }))
+    ).toBe('Added 1 song, removed 1 song and moved 2 songs on YouTube.');
+  });
+
+  test('says how many songs a stopped push still has to move', () => {
+    const stopped: YouTubePushOutcome['stopped'] = { failure: 'quota', message: 'limit reached' };
+    expect(
+      describeYouTubePush(
+        outcome({ inserted: ['a'], stopped, order: { state: 'out-of-order', left: 2 } })
+      )
+    ).toBe('Added 1 song on YouTube. 2 songs still to move.');
   });
 
   test('says so when YouTube already had everything', () => {
@@ -433,6 +794,8 @@ describe('playlistAfterPush', () => {
     playlist: { id: 'PL-created-playlist', created: true },
     inserted: ['vid-a'],
     removed: [],
+    moved: [],
+    order: { state: 'in-order' },
     alreadyThere: 0,
     leftAlone: 0,
     unavailable: [],

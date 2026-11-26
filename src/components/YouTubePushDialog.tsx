@@ -43,6 +43,8 @@ function progressLabel(progress: YouTubePushProgress | null): string {
       return `Added ${progress.done} of ${songs(progress.total)}.`;
     case 'removing':
       return `Removed ${progress.done} of ${songs(progress.total)}.`;
+    case 'ordering':
+      return `Moved ${progress.done} of ${songs(progress.total)} into playlist order.`;
     default: {
       const _exhaustive: never = progress;
       return _exhaustive;
@@ -51,7 +53,7 @@ function progressLabel(progress: YouTubePushProgress | null): string {
 }
 
 function progressFraction(progress: YouTubePushProgress | null): number | null {
-  if (!progress || (progress.step !== 'adding' && progress.step !== 'removing')) return null;
+  if (!progress || progress.step === 'reading' || progress.step === 'creating') return null;
   return progress.total > 0 ? progress.done / progress.total : null;
 }
 
@@ -79,6 +81,7 @@ export function YouTubePushDialog({
   const changeCount = Math.ceil(estimate.quotaUnits / YOUTUBE_WRITE_COST_UNITS);
   const nothingToPush = estimate.matchedCount === 0 && estimate.removeCount === 0;
   const fraction = state.phase === 'working' ? progressFraction(state.progress) : null;
+  const order = state.phase === 'done' ? state.outcome.order : null;
 
   return (
     <div
@@ -132,6 +135,14 @@ export function YouTubePushDialog({
                   </dd>
                 </div>
               )}
+              {estimate.moveCount > 0 && (
+                <div className="flex items-baseline justify-between gap-4 px-4 py-2.5">
+                  <dt className="text-[#8B92A2]">To move, changed place in this playlist</dt>
+                  <dd className="font-mono tabular-nums text-white">
+                    {songs(estimate.moveCount)}
+                  </dd>
+                </div>
+              )}
               {estimate.unmatchedCount > 0 && (
                 <div className="flex items-baseline justify-between gap-4 px-4 py-2.5">
                   <dt className="text-[#8B92A2]">Staying behind, no YouTube match</dt>
@@ -148,8 +159,9 @@ export function YouTubePushDialog({
               </p>
             )}
             <p className="text-xs text-[#8B92A2]">
-              New songs go to the end. CrateSync takes a song off YouTube only when an earlier
-              push put it there, so songs you added on YouTube yourself stay.
+              The songs go in this playlist&apos;s order, and a song that is out of place on
+              YouTube is moved. CrateSync takes a song off YouTube only when an earlier push put
+              it there. Songs you added on YouTube yourself stay and are never moved.
             </p>
             {estimate.days > 1 && (
               <p className="text-xs text-[#FDE68A]">
@@ -191,6 +203,19 @@ export function YouTubePushDialog({
             {state.outcome.stopped && (
               <p role="alert" className="text-xs text-[#FDE68A]">
                 {state.outcome.stopped.message}
+              </p>
+            )}
+            {order?.state === 'sorted-by-youtube' && (
+              <p className="text-xs text-[#FDE68A]">
+                YouTube sorts this playlist by its own rule, so CrateSync left the order alone.
+                To have it follow this playlist, set the playlist&apos;s order to Manual on
+                YouTube and push again.
+              </p>
+            )}
+            {order?.state === 'out-of-order' && !state.outcome.stopped && (
+              <p className="text-xs text-[#FDE68A]">
+                The YouTube playlist changed while CrateSync was working, so the order is not
+                finished. Push again to finish it.
               </p>
             )}
             {state.outcome.leftAlone > 0 && (

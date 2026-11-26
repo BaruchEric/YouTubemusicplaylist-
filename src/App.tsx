@@ -1716,7 +1716,7 @@ export default function App() {
       prev.map((pl) => (pl.id === playlistId ? playlistAfterPush(pl, outcome, now) : pl))
     );
 
-    if (outcome.inserted.length + outcome.removed.length > 0) {
+    if (outcome.inserted.length + outcome.removed.length + outcome.moved.length > 0) {
       const event: SyncEvent = {
         id: crypto.randomUUID(),
         playlistId,
@@ -1726,7 +1726,9 @@ export default function App() {
         removedCount: outcome.removed.length,
         matchedCount: playlistTracks.filter((t) => Boolean(t.youtubeVideoId)).length,
         totalTracks: playlistTracks.length,
-        summary: `Pushed to YouTube (+${outcome.inserted.length}, -${outcome.removed.length})`,
+        summary: `Pushed to YouTube (+${outcome.inserted.length}, -${outcome.removed.length}${
+          outcome.moved.length > 0 ? `, ${outcome.moved.length} moved` : ''
+        })`,
       };
       setSyncHistory((prev) => [event, ...prev].slice(0, 50));
     }

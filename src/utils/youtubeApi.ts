@@ -1,10 +1,11 @@
 /**
- * The four YouTube Data API v3 calls a playlist push needs. Every call carries the access
+ * The five YouTube Data API v3 calls a playlist push needs. Every call carries the access
  * token from "Connect YouTube" (scope https://www.googleapis.com/auth/youtube). YouTube Music
  * shows the same playlists as YouTube, so a playlist made here appears in both.
  *
  * Quota: YouTube gives the Google Cloud project 10,000 units a day. Creating a playlist,
- * adding a song and removing a song cost 50 each. Reading a page of 50 entries costs 1.
+ * adding a song, moving a song and removing a song cost 50 each. Reading a page of 50
+ * entries costs 1.
  */
 
 const API_BASE = 'https://www.googleapis.com/youtube/v3';
@@ -13,6 +14,8 @@ const PAGE_SIZE = 50;
 const MAX_PAGES = 200;
 const TITLE_MAX_LENGTH = 150;
 const DESCRIPTION_MAX_LENGTH = 5000;
+/** The list call reads three values of each entry. Without this YouTube sends titles and thumbnails too. */
+const LIST_FIELDS = 'nextPageToken,items(id,snippet(position),contentDetails(videoId))';
 
 /** Why a call failed, sorted by what the caller should do about it. */
 export type YouTubeFailure =
@@ -32,6 +35,10 @@ export type YouTubeFailure =
   /** The playlist entry is already gone. */
   | 'item-missing'
   | 'playlist-full'
+  /** YouTube sorts the playlist by date or popularity, so nobody can place a song in it. */
+  | 'not-manual-order'
+  /** YouTube refused the place asked for. The playlist changed since it was read. */
+  | 'bad-position'
   /** A rate limit, a write conflict or a server error: worth one more try. */
   | 'busy'
   /** The request never reached YouTube. */
@@ -62,9 +69,20 @@ export interface YouTubePlaylistItem {
 export interface YouTubeApi {
   /** Creates a private playlist and returns its id. */
   createPlaylist(input: { title: string; description: string }): Promise<string>;
+  /** The playlist's entries, first to last. */
   listPlaylistItems(playlistId: string): Promise<YouTubePlaylistItem[]>;
-  /** Adds the video at the end of the playlist. */
-  insertPlaylistItem(playlistId: string, videoId: string): Promise<void>;
+  /**
+   * Adds the video. position is where it lands, counted from 0. Without one, YouTube puts
+   * it where the playlist's own setting says, which is the end unless the owner changed it.
+   */
+  insertPlaylistItem(playlistId: string, videoId: string, position?: number): Promise<void>;
+  /** Moves an entry so that it sits at position, counted from 0, once the move is done. */
+  movePlaylistItem(input: {
+    playlistId: string;
+    itemId: string;
+    videoId: string;
+    position: number;
+  }): Promise<void>;
   deletePlaylistItem(itemId: string): Promise<void>;
 }
 
@@ -93,6 +111,8 @@ export function classifyYouTubeFailure(status: number, reason: string): YouTubeF
   if (reason === 'videoNotFound') return 'video-missing';
   if (reason === 'playlistItemNotFound') return 'item-missing';
   if (reason === 'playlistContainsMaximumNumberOfVideos') return 'playlist-full';
+  if (reason === 'manualSortRequired') return 'not-manual-order';
+  if (reason === 'invalidPlaylistItemPosition') return 'bad-position';
   if (status === 401) return 'auth';
   if (status === 403) return 'forbidden';
   if (status === 409 || status >= 500) return 'busy';
@@ -130,6 +150,14 @@ async function readJson(response: Response): Promise<unknown> {
   }
 }
 
+function positionOf(row: Record<string, unknown>): number | null {
+  if (!isRecord(row.snippet)) return null;
+  const position = row.snippet.position;
+  return typeof position === 'number' && Number.isInteger(position) && position >= 0
+    ? position
+    : null;
+}
+
 function playlistTitle(title: string): string {
   const cleaned = title.replace(/[<>]/g, '').replace(/\s+/g, ' ').trim();
   return (cleaned || 'CrateSync playlist').slice(0, TITLE_MAX_LENGTH);
@@ -137,7 +165,7 @@ function playlistTitle(title: string): string {
 
 export function createYouTubeApi(accessToken: string, fetchImpl: YouTubeFetch = fetch): YouTubeApi {
   async function call(
-    method: 'GET' | 'POST' | 'DELETE',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
     query: Record<string, string>,
     body?: unknown
@@ -204,10 +232,12 @@ export function createYouTubeApi(accessToken: string, fetchImpl: YouTubeFetch = 
 
     async listPlaylistItems(playlistId) {
       const items: YouTubePlaylistItem[] = [];
+      const positions: Array<number | null> = [];
       let pageToken: string | null = null;
       for (let page = 0; page < MAX_PAGES; page++) {
         const query: Record<string, string> = {
-          part: 'contentDetails',
+          part: 'snippet,contentDetails',
+          fields: LIST_FIELDS,
           playlistId,
           maxResults: String(PAGE_SIZE),
         };
@@ -221,22 +251,40 @@ export function createYouTubeApi(accessToken: string, fetchImpl: YouTubeFetch = 
           if (!isRecord(row) || !isRecord(row.contentDetails)) continue;
           const itemId = stringField(row, 'id');
           const videoId = stringField(row.contentDetails, 'videoId');
-          if (itemId && videoId) items.push({ itemId, videoId });
+          if (!itemId || !videoId) continue;
+          items.push({ itemId, videoId });
+          positions.push(positionOf(row));
         }
 
         pageToken = stringField(payload, 'nextPageToken');
         if (!pageToken) break;
       }
-      return items;
+
+      // YouTube's reference does not promise the order of the reply, so sort by the place
+      // each entry reports. One entry without a place means the reply's order has to do.
+      const placed: Array<{ item: YouTubePlaylistItem; position: number }> = [];
+      for (const [index, item] of items.entries()) {
+        const position = positions[index];
+        if (position === null || position === undefined) return items;
+        placed.push({ item, position });
+      }
+      return placed.sort((a, b) => a.position - b.position).map((entry) => entry.item);
     },
 
-    async insertPlaylistItem(playlistId, videoId) {
-      await call(
-        'POST',
-        'playlistItems',
-        { part: 'snippet' },
-        { snippet: { playlistId, resourceId: { kind: 'youtube#video', videoId } } }
-      );
+    async insertPlaylistItem(playlistId, videoId, position) {
+      const snippet = { playlistId, resourceId: { kind: 'youtube#video', videoId } };
+      await call('POST', 'playlistItems', { part: 'snippet' }, {
+        snippet: position === undefined ? snippet : { ...snippet, position },
+      });
+    },
+
+    // The reference says an update deletes every snippet value the request leaves out, so
+    // the body names the playlist and the video again next to the new position.
+    async movePlaylistItem({ playlistId, itemId, videoId, position }) {
+      await call('PUT', 'playlistItems', { part: 'snippet' }, {
+        id: itemId,
+        snippet: { playlistId, resourceId: { kind: 'youtube#video', videoId }, position },
+      });
     },
 
     async deletePlaylistItem(itemId) {
@@ -266,6 +314,10 @@ export function describeYouTubeFailure(failure: YouTubeFailure | 'cancelled'): s
       return 'The song was already gone from the YouTube playlist.';
     case 'playlist-full':
       return 'The YouTube playlist is full. YouTube allows 5,000 videos in one playlist.';
+    case 'not-manual-order':
+      return 'YouTube sorts this playlist by its own rule, so the songs cannot be put in order. Set the playlist to manual order on YouTube, then push again.';
+    case 'bad-position':
+      return 'The YouTube playlist changed while CrateSync was working. Push again to finish.';
     case 'busy':
       return 'YouTube was too busy to take the change. Push again in a minute.';
     case 'network':

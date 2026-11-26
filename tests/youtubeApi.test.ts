@@ -136,6 +136,60 @@ describe('listPlaylistItems', () => {
     expect(calls[1].url.searchParams.get('pageToken')).toBe('page-2');
   });
 
+  test('asks only for the item id, the video id and the position', async () => {
+    const { fetch, calls } = fakeFetch([{ status: 200, body: { items: [] } }]);
+
+    await createYouTubeApi('t', fetch).listPlaylistItems('PL-1');
+
+    expect(calls[0].url.searchParams.get('part')).toBe('snippet,contentDetails');
+    expect(calls[0].url.searchParams.get('fields')).toBe(
+      'nextPageToken,items(id,snippet(position),contentDetails(videoId))'
+    );
+  });
+
+  test('returns the items in playlist order when the reply is not', async () => {
+    const { fetch } = fakeFetch([
+      {
+        status: 200,
+        body: {
+          nextPageToken: 'page-2',
+          items: [
+            { id: 'item-c', snippet: { position: 2 }, contentDetails: { videoId: 'vid-c' } },
+            { id: 'item-a', snippet: { position: 0 }, contentDetails: { videoId: 'vid-a' } },
+          ],
+        },
+      },
+      {
+        status: 200,
+        body: {
+          items: [{ id: 'item-b', snippet: { position: 1 }, contentDetails: { videoId: 'vid-b' } }],
+        },
+      },
+    ]);
+
+    const items = await createYouTubeApi('t', fetch).listPlaylistItems('PL-1');
+
+    expect(items.map((entry) => entry.videoId)).toEqual(['vid-a', 'vid-b', 'vid-c']);
+  });
+
+  test('keeps the order of the reply when an item carries no position', async () => {
+    const { fetch } = fakeFetch([
+      {
+        status: 200,
+        body: {
+          items: [
+            { id: 'item-b', snippet: { position: 1 }, contentDetails: { videoId: 'vid-b' } },
+            { id: 'item-a', contentDetails: { videoId: 'vid-a' } },
+          ],
+        },
+      },
+    ]);
+
+    const items = await createYouTubeApi('t', fetch).listPlaylistItems('PL-1');
+
+    expect(items.map((entry) => entry.videoId)).toEqual(['vid-b', 'vid-a']);
+  });
+
   test('leaves out rows without an item id or a video id', async () => {
     const { fetch } = fakeFetch([
       {
@@ -159,6 +213,43 @@ describe('insertPlaylistItem and deletePlaylistItem', () => {
     expect(calls[0].url.pathname).toBe('/youtube/v3/playlistItems');
     expect(calls[0].body).toEqual({
       snippet: { playlistId: 'PL-1', resourceId: { kind: 'youtube#video', videoId: 'vid-9' } },
+    });
+  });
+
+  test('adds a video at a given place in the playlist', async () => {
+    const { fetch, calls } = fakeFetch([{ status: 200, body: { id: 'item-9' } }]);
+
+    await createYouTubeApi('t', fetch).insertPlaylistItem('PL-1', 'vid-9', 2);
+
+    expect(calls[0].body).toEqual({
+      snippet: {
+        playlistId: 'PL-1',
+        resourceId: { kind: 'youtube#video', videoId: 'vid-9' },
+        position: 2,
+      },
+    });
+  });
+
+  test('moves an entry to another place in the playlist', async () => {
+    const { fetch, calls } = fakeFetch([{ status: 200, body: { id: 'item-9' } }]);
+
+    await createYouTubeApi('t', fetch).movePlaylistItem({
+      playlistId: 'PL-1',
+      itemId: 'item-9',
+      videoId: 'vid-9',
+      position: 0,
+    });
+
+    expect(calls[0].method).toBe('PUT');
+    expect(calls[0].url.pathname).toBe('/youtube/v3/playlistItems');
+    expect(calls[0].url.searchParams.get('part')).toBe('snippet');
+    expect(calls[0].body).toEqual({
+      id: 'item-9',
+      snippet: {
+        playlistId: 'PL-1',
+        resourceId: { kind: 'youtube#video', videoId: 'vid-9' },
+        position: 0,
+      },
     });
   });
 
@@ -219,6 +310,8 @@ describe('classifyYouTubeFailure', () => {
     [403, 'rateLimitExceeded', 'busy'],
     [409, 'aborted', 'busy'],
     [503, 'backendError', 'busy'],
+    [400, 'manualSortRequired', 'not-manual-order'],
+    [400, 'invalidPlaylistItemPosition', 'bad-position'],
     [400, 'invalidPlaylistSnippet', 'other'],
   ];
 

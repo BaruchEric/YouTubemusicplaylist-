@@ -26,7 +26,7 @@ All primary domain interfaces are defined in [`src/types/music.ts`](../src/types
   - Metadata: `title`, `artist`, `album`, `genre`, `year`, `trackNumber`, `duration`, `format`, `fileSize`, `coverArtUrl`.
   - Sync & playback state: `isMissingOnDevice`, `youtubeVideoId`, `youtubeTitle`, `matchStatus` (`unmatched | matched | skipped`), `playCount`, `skipCount`, `lastPlayedAt`.
   - Google Drive linkage: `driveFileId`, `driveModifiedTime`, `drivePath`, `cachedOnDeviceAt`.
-- **`Playlist`**: Ordered `trackIds`, last-synced snapshot `syncedTrackIds`, `youtubePlaylistUrl` (a link the user pasted, or the playlist the first push created), optional `youtubePush` (`YouTubePushRecord`: the YouTube playlist id, the video ids CrateSync itself added to it, and when), `watchedFolderName`, and `SyncRule` (`autoAddNewFiles`, `removeMissingFiles`, `folderFilter`). A new or imported playlist starts with `syncedTrackIds: []` and `lastSyncedAt: null`. Records saved before 2026-11-26 may still carry `syncRule.autoScanIntervalSec`; nothing reads it, because the watch interval is app-wide.
+- **`Playlist`**: Ordered `trackIds`, last-synced snapshot `syncedTrackIds`, `youtubePlaylistUrl` (a link the user pasted, or the playlist the first push created), optional `youtubePush` (`YouTubePushRecord`: the YouTube playlist id, the video ids CrateSync itself added to it in the order YouTube has them, and when), `watchedFolderName`, and `SyncRule` (`autoAddNewFiles`, `removeMissingFiles`, `folderFilter`). A new or imported playlist starts with `syncedTrackIds: []` and `lastSyncedAt: null`. Records saved before 2026-11-26 may still carry `syncRule.autoScanIntervalSec`; nothing reads it, because the watch interval is app-wide.
 - **`PlaylistDiff`**: Computed delta (`toAdd`, `toRemove`, `missingOnDevice`, `matchedCount`, `unmatchedCount`, `hasChanges`) produced by [`computePlaylistDiff`](../src/utils/syncEngine.ts).
 - **`SmartPlaylist`**: Rule-based dynamic playlist (`matchMode: 'all' | 'any'`, `rules`, `sortBy`, `sortDir`, `excludeMissing`).
 - **`SyncEvent`**: Audit log record for applied playlist syncs.
@@ -87,16 +87,18 @@ Implemented across [`src/utils/googleAuth.ts`](../src/utils/googleAuth.ts), [`sr
 
 ## Pushing a playlist to YouTube
 
-[`src/utils/youtubePush.ts`](../src/utils/youtubePush.ts) decides what to send and [`src/utils/youtubeApi.ts`](../src/utils/youtubeApi.ts) makes the four YouTube Data API v3 calls. The dialog is [`src/components/YouTubePushDialog.tsx`](../src/components/YouTubePushDialog.tsx), opened from the playlist's Push to YouTube button.
+[`src/utils/youtubePush.ts`](../src/utils/youtubePush.ts) decides what to send and [`src/utils/youtubeApi.ts`](../src/utils/youtubeApi.ts) makes the five YouTube Data API v3 calls. The dialog is [`src/components/YouTubePushDialog.tsx`](../src/components/YouTubePushDialog.tsx), opened from the playlist's Push to YouTube button.
 
-1. **Review.** `estimateYouTubePush` works out, from this device alone, how many songs go and how many come off, so the dialog can show it before anybody signs in.
+1. **Review.** `estimateYouTubePush` works out, from this device alone, how many songs go, how many come off and how many changed place since the last push, so the dialog can show it before anybody signs in.
 2. **Connect.** `connectYouTube` in `googleAuth.ts` opens Google's popup for the scope `https://www.googleapis.com/auth/youtube` only. A signed-in user goes through `reauthenticateWithPopup`, which refuses a different Google account. The access token lives in memory and is dropped after 50 minutes.
-3. **Read or create.** A playlist with a link is read with `playlistItems.list`. One without is created private with `playlists.insert`, and its link is saved on the playlist.
-4. **Diff.** `planYouTubePush` adds the matched videos YouTube lacks, in playlist order. It removes an entry only when its video is in `youtubePush.videoIds` and the playlist no longer holds it. Entries CrateSync did not add are counted as left alone.
-5. **Write.** Inserts, then deletes, one at a time. A busy reply (409, a rate limit, a 5xx) gets one more try after two seconds. A video YouTube no longer has is skipped. Anything else stops the push: the daily quota, an expired token, a playlist owned by another account.
+3. **Read or create.** A playlist with a link is read with `playlistItems.list`, asking only for each entry's id, video id and position, and sorted by position. One without is created private with `playlists.insert`, and its link is saved on the playlist.
+4. **Diff.** `planYouTubePush` adds the matched videos YouTube lacks, in playlist order. It removes an entry only when its video is in `youtubePush.videoIds` and the playlist no longer holds it. Entries CrateSync did not add are counted as left alone. `planYouTubeOrder` takes the playlist songs YouTube already has, keeps the longest run that is in playlist order, and lists the rest to move.
+5. **Write.** Inserts, then deletes, then moves, one at a time. An insert names its place with `snippet.position`: right after the nearest playlist song before it that is in place, else right before the nearest one after it, else the end. A move is `playlistItems.update` with the same rule. The push keeps its own picture of the YouTube playlist and repeats every write on it, so each next position is counted on the playlist as it then stands. A busy reply (409, a rate limit, a 5xx) gets one more try after two seconds. A video YouTube no longer has is skipped. Anything else stops the push: the daily quota, an expired token, a playlist owned by another account.
+   - YouTube answers `manualSortRequired` when the playlist is sorted by date or popularity. The push then adds the song without a place, moves nothing, and reports the order as `sorted-by-youtube`.
+   - YouTube answers `invalidPlaylistItemPosition` when the playlist changed under the push. The push adds the song without a place, stops moving, and reports how many songs are still out of place. The next push reads the playlist again and finishes.
 6. **Record.** `playlistAfterPush` stores the new `youtubePush` and stamps `updatedAt`, also after a push that stopped part way, so the next push sends only what is still missing.
 
-Quota is 10,000 units a day for the Google Cloud project. A list page costs 1 and every write costs 50. The push never reorders songs, since each move would cost another 50.
+Quota is 10,000 units a day for the Google Cloud project. A list page costs 1 and every write costs 50, a move included. Placing a new song costs nothing extra, because the insert carries the position. Moves run last, so a push that hits the quota has spent it on the songs before their order.
 
 ## Audio Playback Pipeline
 
@@ -140,8 +142,8 @@ Managed by [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts), [`sr
 | `folderMappings.ts` | Device profiles, cross-platform path normalization, Drive-to-local binding resolution, merging & tombstones |
 | `libraryMerge.ts` | Joins two devices' songs and playlists for a push or a pull: newest edit wins, deletions as tombstones, edit stamps |
 | `youtubeLinks.ts` | YouTube ID/playlist URL extraction, queue batch builders, M3U8/CSV/JSON/TXT import & export |
-| `youtubeApi.ts` | YouTube Data API v3 client for a push: create a playlist, list its entries, add one, remove one, and sort failures by what to do about them |
-| `youtubePush.ts` | Plans and runs a push to YouTube: the estimate shown before sign-in, the diff, the write loop, and the record stored on the playlist |
+| `youtubeApi.ts` | YouTube Data API v3 client for a push: create a playlist, list its entries in order, add one at a place, move one, remove one, and sort failures by what to do about them |
+| `youtubePush.ts` | Plans and runs a push to YouTube: the estimate shown before sign-in, the diff, which songs have to move, the write loop, and the record stored on the playlist |
 | `smartPlaylists.ts` | Smart Playlist rule definitions, field metadata, and evaluation/sorting engine |
 | `smartSearch.ts` | Global search tokenizer, query operator parser, and scored track/album/genre/playlist matching |
 | `dashboardSmartFilters.ts` | Dashboard quick criteria, custom rule evaluation, and saved filter storage |
