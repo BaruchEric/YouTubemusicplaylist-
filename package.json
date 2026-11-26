@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "deploy": "deploy/deploy-mini.sh"
   },
   "dependencies": {
     "@google/genai": "^3.6.1",

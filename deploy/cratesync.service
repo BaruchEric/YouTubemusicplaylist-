@@ -1,0 +1,30 @@
+# /etc/systemd/system/cratesync.service
+# CrateSync at https://music.beric.ca (beric-mini tunnel, beric.ca edge gate).
+# Code: /opt/stacks/cratesync/app, copied and built by deploy/deploy-mini.sh.
+# Secrets: /opt/stacks/cratesync/env (mode 600), which holds GEMINI_API_KEY and
+# GEMINI_ALLOWED_EMAILS. Without that file the AI endpoints answer 503 and
+# everything else works.
+[Unit]
+Description=CrateSync (music.beric.ca)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=eric
+WorkingDirectory=/opt/stacks/cratesync/app
+Environment=NODE_ENV=production
+Environment=BIND_HOST=127.0.0.1
+Environment=PORT=4420
+EnvironmentFile=-/opt/stacks/cratesync/env
+Environment=PATH=/home/eric/.local/share/mise/shims:/home/eric/.local/bin:/usr/local/bin:/usr/bin
+ExecStart=/home/eric/.local/share/mise/shims/node server.ts
+Restart=always
+RestartSec=5
+# Omarchy's default stop timeout is 5 seconds.
+TimeoutStopSec=15
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

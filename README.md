@@ -80,7 +80,7 @@ cp .env.example .env
 | `PORT` | Optional | Server port (defaults to `3000`). |
 | `DISABLE_HMR` | Optional | Set to `true` to disable Vite HMR and file watching. |
 
-> **Google Drive OAuth**: Firebase and Google OAuth client configuration is loaded from [`firebase-applet-config.json`](firebase-applet-config.json). Google sign-in works only from an origin the Firebase project knows in three places: Auth's authorized domains (Authentication, Settings, Authorized domains), the HTTP referrers allowed on the browser API key in `apiKey`, and the domains of the reCAPTCHA Enterprise key in `recaptchaSiteKey`, which Firebase App Check uses. App Check is enforced for Authentication, so an origin missing from the reCAPTCHA key cannot sign in. The key allows `localhost` on ports 3000 to 3002 and the AI Studio preview hosts, so a local server works at `http://localhost:3000`. To serve from anywhere else, add the origin in all three places.
+> **Google Drive OAuth**: Firebase and Google OAuth client configuration is loaded from [`firebase-applet-config.json`](firebase-applet-config.json). Google sign-in works only from an origin the Firebase project knows in three places: Auth's authorized domains (Authentication, Settings, Authorized domains), the HTTP referrers allowed on the browser API key in `apiKey`, and the domains of the reCAPTCHA Enterprise key in `recaptchaSiteKey`, which Firebase App Check uses. App Check is enforced for Authentication, so an origin missing from the reCAPTCHA key cannot sign in. The key allows `localhost` on ports 3000 to 3002 and the AI Studio preview hosts, so a local server works at `http://localhost:3000`. The same three places also list `music.beric.ca`, where the app is deployed ([`docs/DEPLOY.md`](docs/DEPLOY.md)). To serve from anywhere else, add the origin in all three places.
 
 ### Running the App
 
@@ -108,6 +108,7 @@ npm start
 | `preview` | `vite preview` | Previews the static Vite production build |
 | `lint` | `tsc --noEmit` | Runs strict TypeScript type-checking |
 | `test` | `bun test` | Runs the unit tests in `tests/` (AI endpoint sign-in check, folder mapping merges, the two-device library merge, Drive uploads, playlist diffs and imports, the folder watcher, exports) |
+| `deploy` | `deploy/deploy-mini.sh` | Deploys the committed tree to https://music.beric.ca. See [`docs/DEPLOY.md`](docs/DEPLOY.md) |
 | `clean` | `rm -rf dist server.js` | Removes build artifacts |
 
 ## Backend API
@@ -139,8 +140,10 @@ Classifies tracks into canonical primary genres and subgenres.
 ├── metadata.json                # AI Studio applet metadata
 ├── firebase-applet-config.json  # Firebase & Google OAuth client configuration
 ├── vite.config.ts               # Vite + React + Tailwind v4 + asset copy plugin
+├── deploy/                      # systemd unit and the deploy script for music.beric.ca
 ├── docs/
-│   └── ARCHITECTURE.md          # Detailed data model, sync protocol & module reference
+│   ├── ARCHITECTURE.md          # Detailed data model, sync protocol & module reference
+│   └── DEPLOY.md                # How the app is deployed and what makes the hostname work
 └── src/
     ├── App.tsx                  # Root workspace state, ingestion, sync & view routing
     ├── types/music.ts           # Core domain types
