@@ -100,6 +100,14 @@ Implemented across [`src/utils/googleAuth.ts`](../src/utils/googleAuth.ts), [`sr
 
 Quota is 10,000 units a day for the Google Cloud project. A list page costs 1 and every write costs 50, a move included. Placing a new song costs nothing extra, because the insert carries the position. Moves run last, so a push that hits the quota has spent it on the songs before their order.
 
+## How the client code is split
+
+`bun run build` writes about fifteen scripts where it used to write one of 1.7 MB.
+
+- **Screens.** [`src/components/LazyViews.tsx`](../src/components/LazyViews.tsx) wraps the seven screens in `React.lazy`, so the browser fetches a screen's script the first time that screen opens. The first page load carries the app shell and the dashboard. 1.5 seconds later `fetchAllViews` fetches the other six, so a later click opens at once.
+- **Libraries.** `build.rolldownOptions.output.codeSplitting` in [`vite.config.ts`](../vite.config.ts) puts React, Firebase, Recharts, D3 and the icons in files of their own. Their names change only on an upgrade, so a deploy of app code leaves them in the browser's cache.
+- **A tab left open through a deploy.** The deploy replaces the scripts, and a tab from before it can ask for one that is gone. The server answers `404`, Vite fires `vite:preloadError`, and [`src/utils/staleCode.ts`](../src/utils/staleCode.ts) reloads the page once. It does not reload again within 60 seconds, when the browser is offline, or for the background fetch of the other screens. If the script is still missing after the reload, `ViewBoundary` shows "This screen did not load" with a Reload button in place of that screen, and the sidebar and the player keep working.
+
 ## Audio Playback Pipeline
 
 Managed by [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts), [`src/utils/audioTransitions.ts`](../src/utils/audioTransitions.ts), [`src/utils/replayGain.ts`](../src/utils/replayGain.ts), and [`src/utils/smartShuffle.ts`](../src/utils/smartShuffle.ts):
@@ -115,7 +123,7 @@ Managed by [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts), [`sr
 
 - **AI endpoint access**: [`server/aiAccess.ts`](../server/aiAccess.ts) guards every `/api` route before the body is parsed. It verifies a Firebase ID token (`Authorization: Bearer`) with `jose` against Google's securetoken keys, with issuer and audience bound to the `projectId` in `firebase-applet-config.json`, and accepts only Google sign-ins. `GEMINI_ALLOWED_EMAILS`, when set, limits use to those verified emails. Each account gets 240 requests per 10 minutes and 2 in flight; over that it answers `429` with `Retry-After`. Development mode gets no exception: `localhost` is an authorized Firebase domain, so a local run signs in like the deployed app. The client side is [`src/utils/aiApi.ts`](../src/utils/aiApi.ts), which waits for Firebase to restore the session, attaches the token, and retries a `429` up to three times.
 - **Development (`NODE_ENV !== 'production'`)**: Attaches Vite in middleware mode (`appType: 'spa'`) for live module serving and HMR.
-- **Production (`NODE_ENV === 'production'`)**: Serves static files from `dist/` with an SPA fallback to `dist/index.html`.
+- **Production (`NODE_ENV === 'production'`)**: [`server/builtApp.ts`](../server/builtApp.ts) serves `dist/`. A script or stylesheet whose name ends in a content hash goes out with `Cache-Control: public, max-age=31536000, immutable`. A file under `/assets` that does not exist answers `404` as plain text. Any other address gets `dist/index.html`, which the browser checks again on each visit.
 - **AI Endpoints**:
   - `POST /api/metadata/suggest`: Batched by [`src/utils/metadataLookup.ts`](../src/utils/metadataLookup.ts) (client batch size `10`, server max `25`). Uses Gemini with `tools: [{ googleSearch: {} }]` and structured JSON schema output; returns sanitized suggestions plus deduplicated web grounding `sources`.
   - `POST /api/genres/classify`: Batched by [`src/utils/genreClassifier.ts`](../src/utils/genreClassifier.ts) (client batch size `50`, server max `60`). Uses Gemini with structured JSON schema output to assign canonical genres/subgenres while filtering out generic placeholders (`Other`, `Unknown`, `Misc`, etc.).
@@ -153,9 +161,11 @@ Managed by [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts), [`sr
 | `genreClassifier.ts` | Client batch wrapper for `POST /api/genres/classify` |
 | `metadataLookup.ts` | Client batch wrapper for `POST /api/metadata/suggest` |
 | `recommendations.ts` | Genre-profile and genre-adjacency track recommendations |
+| `staleCode.ts` | Reloads the page once when a screen's script is gone after a deploy, with the rule that stops a reload loop |
 
 ### `src/components/`
-- **Core Workspace Views**: `DashboardView`, `ScannerView`, `PlaylistView`, `SmartPlaylistView`, `SyncQueueView`, `TransferView`
+- **Core Workspace Views**: `DashboardView`, `ScannerView`, `PlaylistView`, `SmartPlaylistView`, `SyncQueueView`, `ScanLogView`, `TransferView`
+- **Screen loading**: `LazyViews` (the seven screens as `React.lazy` components, `fetchAllViews`, and `ViewBoundary`, which shows a message when a screen fails to load)
 - **Navigation & Chrome**: `Sidebar`, `TopBar`, `MiniPlayer`, `ToastContainer`, `DashboardJumpMenu`, `DashboardQuickActionsMenu`
 - **Google Drive & Folder UI**: `GoogleDriveTransferSection`, `FolderMappingsPanel`, `DriveFolderBrowserModal`, `LocalFolderBrowserModal`
 - **Library Maintenance & Editing**: `TrackMatchDrawer`, `BatchTagEditorModal`, `DuplicateFinderPanel`, `AudioIntegrityPanel`, `LibraryCleanupPanel`, `Modals`, `YouTubePushDialog`, `SmartPlaylistModal`, `SmartSearchModal`

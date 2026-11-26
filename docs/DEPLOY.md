@@ -14,6 +14,8 @@ bun run deploy
 
 Run the ship gates first (`bun run lint`, `bun test`, `bun run build`). The script does not.
 
+A deploy replaces the scripts under `dist/assets`, whose names carry a hash of their contents. A tab that was open before the deploy keeps working: it fetched every screen's script 1.5 seconds after it loaded. A tab that still asks for an old script gets a `404` and reloads itself once, which brings the new build. `docs/ARCHITECTURE.md` has the details under "How the client code is split".
+
 ## What lives on the mini
 
 | Path | What it is |

@@ -50,7 +50,7 @@ It runs at https://music.beric.ca ([`docs/DEPLOY.md`](docs/DEPLOY.md)).
 ## Tech Stack
 
 - **Frontend**: React 19, TypeScript, Vite 8, Tailwind CSS v4, Lucide Icons, Motion, D3, Recharts
-- **Backend**: Express 4 (serves API routes + Vite dev middleware or production `dist/` bundle)
+- **Backend**: Express 4 (serves API routes + Vite dev middleware or the production build in `dist/`)
 - **AI**: `@google/genai` (server-side Gemini API with Google Search grounding)
 - **Auth & Cloud Sync**: Firebase Auth + Google Drive REST API v3
 - **Persistence**: IndexedDB (`CrateSyncDB`) + `localStorage` settings/stats caches
@@ -113,7 +113,7 @@ npm start
 | Script | Command | Description |
 | --- | --- | --- |
 | `dev` | `tsx server.ts` | Runs Express with Vite middleware in development mode |
-| `build` | `vite build` | Builds the client bundle to `dist/` and copies `src/assets/` |
+| `build` | `vite build` | Builds the client to `dist/`, one script per screen plus one per library group, and copies `src/assets/` |
 | `start` | `NODE_ENV=production node server.ts` | Runs the production server, serving `dist/` (run `build` first) |
 | `preview` | `vite preview` | Previews the static Vite production build |
 | `lint` | `tsc --noEmit` | Runs strict TypeScript type-checking |
@@ -145,11 +145,12 @@ Classifies tracks into canonical primary genres and subgenres.
 .
 ├── server.ts                    # Express server, Vite middleware, Gemini API routes
 ├── server/aiAccess.ts           # Sign-in check and rate limit for the Gemini routes
+├── server/builtApp.ts           # Serves dist/ in production: cache rules and the page fallback
 ├── tests/                       # bun test unit tests
 ├── index.html                   # App shell & typography
 ├── metadata.json                # AI Studio applet metadata
 ├── firebase-applet-config.json  # Firebase & Google OAuth client configuration
-├── vite.config.ts               # Vite + React + Tailwind v4 + asset copy plugin
+├── vite.config.ts               # Vite + React + Tailwind v4, library file groups, asset copy plugin
 ├── deploy/                      # systemd unit and the deploy script for music.beric.ca
 ├── docs/
 │   ├── ARCHITECTURE.md          # Detailed data model, sync protocol & module reference

@@ -1,9 +1,9 @@
 import 'dotenv/config';
 import express from 'express';
-import fs from 'fs';
 import path from 'path';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import { createAiAccessGuard, parseEmailList, readFirebaseProjectId } from './server/aiAccess.ts';
+import { serveBuiltApp } from './server/builtApp.ts';
 
 const PORT = Number(process.env.PORT) || 3000;
 // 0.0.0.0 suits a container deploy. Set BIND_HOST=127.0.0.1 to keep a local server off the network.
@@ -473,16 +473,7 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distDir = path.resolve(process.cwd(), 'dist');
-    app.use(express.static(distDir));
-    app.get('*', (_req, res) => {
-      const indexFile = path.join(distDir, 'index.html');
-      if (fs.existsSync(indexFile)) {
-        res.sendFile(indexFile);
-      } else {
-        res.status(404).send('Build output not found. Run npm run build first.');
-      }
-    });
+    serveBuiltApp(app, path.resolve(process.cwd(), 'dist'));
   }
 
   app.listen(PORT, HOST, () => {

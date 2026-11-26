@@ -9,25 +9,29 @@ import {
 } from 'react';
 import { X } from 'lucide-react';
 import { BatchTagEditorModal, type BatchTrackPatch } from './components/BatchTagEditorModal';
-import { DashboardView } from './components/DashboardView';
+import {
+  DashboardView,
+  PlaylistView,
+  ScanLogView,
+  ScannerView,
+  SmartPlaylistView,
+  SyncQueueView,
+  TransferView,
+  ViewBoundary,
+  fetchAllViews,
+} from './components/LazyViews';
 import { MiniPlayer } from './components/MiniPlayer';
 import { ConfirmModal, CreatePlaylistModal } from './components/Modals';
-import { PlaylistView } from './components/PlaylistView';
-import { ScanLogView } from './components/ScanLogView';
-import { ScannerView } from './components/ScannerView';
 import { Sidebar } from './components/Sidebar';
 import {
   SmartPlaylistModal,
   type SmartPlaylistFormPayload,
 } from './components/SmartPlaylistModal';
-import { SmartPlaylistView } from './components/SmartPlaylistView';
 import { SmartSearchModal } from './components/SmartSearchModal';
-import { SyncQueueView } from './components/SyncQueueView';
 import { ToastContainer } from './components/ToastContainer';
 import { YouTubePushDialog, type YouTubePushDialogState } from './components/YouTubePushDialog';
 import { TopBar } from './components/TopBar';
 import { TrackMatchDrawer } from './components/TrackMatchDrawer';
-import { TransferView } from './components/TransferView';
 import { useAudioPlayer } from './hooks/useAudioPlayer';
 import { useToasts, type ToastStat } from './hooks/useToasts';
 import type {
@@ -166,6 +170,11 @@ export default function App() {
   useEffect(() => {
     devicesRef.current = devices;
   }, [devices]);
+  // Once the first screen is up, fetch the code of the other screens.
+  useEffect(() => {
+    const timer = window.setTimeout(fetchAllViews, 1500);
+    return () => window.clearTimeout(timer);
+  }, []);
   const [folderMappings, setFolderMappings] = useState<DriveFolderMapping[]>([]);
   const folderMappingsRef = useRef<DriveFolderMapping[]>(folderMappings);
   useEffect(() => {
@@ -2988,276 +2997,278 @@ export default function App() {
           </div>
         )}
 
-        {activeView === 'dashboard' && (
-          <DashboardView
-            tracks={tracks}
-            playlists={playlists}
-            trackMap={trackMap}
-            diffMap={diffMap}
-            syncHistory={syncHistory}
-            watchedFolder={watchedFolder}
-            autoWatchIntervalSec={autoWatchIntervalSec}
-            isScanning={isScanning}
-            activePlayingTrackId={audioPlayer.state.activeTrackId}
-            isAudioPlaying={audioPlayer.state.isPlaying}
-            playStats={audioPlayer.playStats}
-            playHistory={audioPlayer.playHistory}
-            onClearPlayHistory={audioPlayer.clearPlayHistory}
-            onMountFolder={handleMountFolder}
-            onPickFilesFallback={() => filesInputRef.current?.click()}
-            onDropTransfer={handleDropTransfer}
-            onRescanFolder={() => handleRescanWatchedFolder(false)}
-            onOpenScanner={(preset = 'all', options) => {
-              setScannerFilterPreset(preset);
-              setScannerGenrePreset(options?.genre ?? 'all');
-              setScannerGroupByGenrePreset(Boolean(options?.groupByGenre));
-              setScannerSearchPreset(options?.query ?? '');
-              setScannerOpenCleanupPreset(Boolean(options?.openCleanup));
-              setScannerOpenDuplicatesPreset(Boolean(options?.openDuplicates));
-              setScannerOpenIntegrityPreset(Boolean(options?.openIntegrity));
-              setActivePlaylistId(null);
-              setActiveView('scanner');
-            }}
-            integrityResults={integrityResults}
-            onOpenPlaylist={(id) => {
-              setActivePlaylistId(id);
-              setActiveView('playlist');
-            }}
-            onOpenCreatePlaylist={() => setCreateModalState({ open: true, seedTrackIds: [] })}
-            onCreatePlaylistFromTracks={(seedTrackIds) =>
-              setCreateModalState({ open: true, seedTrackIds })
-            }
-            onAddTracksToPlaylist={handleAddTracksToPlaylist}
-            onOpenSyncQueue={() => {
-              setActivePlaylistId(null);
-              setActiveView('sync');
-            }}
-            onOpenTransfer={() => {
-              setActivePlaylistId(null);
-              setActiveView('transfer');
-            }}
-            onApplySync={handleRequestApplySync}
-            onPlayTrack={audioPlayer.playTrack}
-            onPlayList={audioPlayer.playList}
-            onInspectTrack={setInspectedTrackId}
-            onUpdateAlbumCoverArt={handleUpdateAlbumCoverArt}
-            onOpenBatchTagEditor={(trackIds, contextLabel) =>
-              setBatchTagModal({ open: true, trackIds, contextLabel })
-            }
-            onApplyTrackGenres={handleApplyTrackGenres}
-          />
-        )}
+        <ViewBoundary key={activeView}>
+          {activeView === 'dashboard' && (
+            <DashboardView
+              tracks={tracks}
+              playlists={playlists}
+              trackMap={trackMap}
+              diffMap={diffMap}
+              syncHistory={syncHistory}
+              watchedFolder={watchedFolder}
+              autoWatchIntervalSec={autoWatchIntervalSec}
+              isScanning={isScanning}
+              activePlayingTrackId={audioPlayer.state.activeTrackId}
+              isAudioPlaying={audioPlayer.state.isPlaying}
+              playStats={audioPlayer.playStats}
+              playHistory={audioPlayer.playHistory}
+              onClearPlayHistory={audioPlayer.clearPlayHistory}
+              onMountFolder={handleMountFolder}
+              onPickFilesFallback={() => filesInputRef.current?.click()}
+              onDropTransfer={handleDropTransfer}
+              onRescanFolder={() => handleRescanWatchedFolder(false)}
+              onOpenScanner={(preset = 'all', options) => {
+                setScannerFilterPreset(preset);
+                setScannerGenrePreset(options?.genre ?? 'all');
+                setScannerGroupByGenrePreset(Boolean(options?.groupByGenre));
+                setScannerSearchPreset(options?.query ?? '');
+                setScannerOpenCleanupPreset(Boolean(options?.openCleanup));
+                setScannerOpenDuplicatesPreset(Boolean(options?.openDuplicates));
+                setScannerOpenIntegrityPreset(Boolean(options?.openIntegrity));
+                setActivePlaylistId(null);
+                setActiveView('scanner');
+              }}
+              integrityResults={integrityResults}
+              onOpenPlaylist={(id) => {
+                setActivePlaylistId(id);
+                setActiveView('playlist');
+              }}
+              onOpenCreatePlaylist={() => setCreateModalState({ open: true, seedTrackIds: [] })}
+              onCreatePlaylistFromTracks={(seedTrackIds) =>
+                setCreateModalState({ open: true, seedTrackIds })
+              }
+              onAddTracksToPlaylist={handleAddTracksToPlaylist}
+              onOpenSyncQueue={() => {
+                setActivePlaylistId(null);
+                setActiveView('sync');
+              }}
+              onOpenTransfer={() => {
+                setActivePlaylistId(null);
+                setActiveView('transfer');
+              }}
+              onApplySync={handleRequestApplySync}
+              onPlayTrack={audioPlayer.playTrack}
+              onPlayList={audioPlayer.playList}
+              onInspectTrack={setInspectedTrackId}
+              onUpdateAlbumCoverArt={handleUpdateAlbumCoverArt}
+              onOpenBatchTagEditor={(trackIds, contextLabel) =>
+                setBatchTagModal({ open: true, trackIds, contextLabel })
+              }
+              onApplyTrackGenres={handleApplyTrackGenres}
+            />
+          )}
 
-        {activeView === 'scanner' && (
-          <ScannerView
-            tracks={tracks}
-            playlists={playlists}
-            playStats={audioPlayer.playStats}
-            initialFilter={scannerFilterPreset}
-            initialGenre={scannerGenrePreset}
-            initialGroupByGenre={scannerGroupByGenrePreset}
-            initialSearchQuery={scannerSearchPreset}
-            initialOpenCleanup={scannerOpenCleanupPreset}
-            initialOpenDuplicates={scannerOpenDuplicatesPreset}
-            initialOpenIntegrity={scannerOpenIntegrityPreset}
-            watchedFolder={watchedFolder}
-            autoWatchIntervalSec={autoWatchIntervalSec}
-            isScanning={isScanning}
-            scanProgress={scanProgress}
-            scanNotice={scanNotice}
-            isHashingDuplicates={isHashingDuplicates}
-            hashProgress={hashProgress}
-            integrityResults={integrityResults}
-            isScanningIntegrity={isScanningIntegrity}
-            integrityProgress={integrityProgress}
-            activePlayingTrackId={audioPlayer.state.activeTrackId}
-            isAudioPlaying={audioPlayer.state.isPlaying}
-            hasPlayableFile={(fileKey) =>
-              fileMapRef.current.has(fileKey) || storedAudioKeys.has(fileKey)
-            }
-            onMountFolder={handleMountFolder}
-            onPickFilesFallback={() => filesInputRef.current?.click()}
-            onDropTransfer={handleDropTransfer}
-            onRescanFolder={() => handleRescanWatchedFolder(false)}
-            onChangeAutoWatch={setAutoWatchIntervalSec}
-            onComputeMissingHashes={handleComputeMissingHashes}
-            onRunIntegrityScan={handleRunIntegrityScan}
-            onRepairTrackMetadata={handleRepairTrackMetadata}
-            onRequestRemoveDuplicates={(trackIds, remapToKeep) =>
-              setPendingConfirm({ kind: 'remove-duplicates', trackIds, remapToKeep })
-            }
-            onRemoveMissingTracks={handleRemoveMissingTracks}
-            onPlayTrack={audioPlayer.playTrack}
-            onPlayList={audioPlayer.playList}
-            onInspectTrack={setInspectedTrackId}
-            onOpenBatchTagEditor={(trackIds, contextLabel) =>
-              setBatchTagModal({ open: true, trackIds, contextLabel })
-            }
-            onCreatePlaylistFromTracks={(seedTrackIds) =>
-              setCreateModalState({ open: true, seedTrackIds })
-            }
-            onAddTracksToPlaylist={handleAddTracksToPlaylist}
-            onRequestDeleteTracks={(trackIds) =>
-              setPendingConfirm({ kind: 'delete-tracks', trackIds })
-            }
-            onGoToImport={() => setActiveView('transfer')}
-          />
-        )}
+          {activeView === 'scanner' && (
+            <ScannerView
+              tracks={tracks}
+              playlists={playlists}
+              playStats={audioPlayer.playStats}
+              initialFilter={scannerFilterPreset}
+              initialGenre={scannerGenrePreset}
+              initialGroupByGenre={scannerGroupByGenrePreset}
+              initialSearchQuery={scannerSearchPreset}
+              initialOpenCleanup={scannerOpenCleanupPreset}
+              initialOpenDuplicates={scannerOpenDuplicatesPreset}
+              initialOpenIntegrity={scannerOpenIntegrityPreset}
+              watchedFolder={watchedFolder}
+              autoWatchIntervalSec={autoWatchIntervalSec}
+              isScanning={isScanning}
+              scanProgress={scanProgress}
+              scanNotice={scanNotice}
+              isHashingDuplicates={isHashingDuplicates}
+              hashProgress={hashProgress}
+              integrityResults={integrityResults}
+              isScanningIntegrity={isScanningIntegrity}
+              integrityProgress={integrityProgress}
+              activePlayingTrackId={audioPlayer.state.activeTrackId}
+              isAudioPlaying={audioPlayer.state.isPlaying}
+              hasPlayableFile={(fileKey) =>
+                fileMapRef.current.has(fileKey) || storedAudioKeys.has(fileKey)
+              }
+              onMountFolder={handleMountFolder}
+              onPickFilesFallback={() => filesInputRef.current?.click()}
+              onDropTransfer={handleDropTransfer}
+              onRescanFolder={() => handleRescanWatchedFolder(false)}
+              onChangeAutoWatch={setAutoWatchIntervalSec}
+              onComputeMissingHashes={handleComputeMissingHashes}
+              onRunIntegrityScan={handleRunIntegrityScan}
+              onRepairTrackMetadata={handleRepairTrackMetadata}
+              onRequestRemoveDuplicates={(trackIds, remapToKeep) =>
+                setPendingConfirm({ kind: 'remove-duplicates', trackIds, remapToKeep })
+              }
+              onRemoveMissingTracks={handleRemoveMissingTracks}
+              onPlayTrack={audioPlayer.playTrack}
+              onPlayList={audioPlayer.playList}
+              onInspectTrack={setInspectedTrackId}
+              onOpenBatchTagEditor={(trackIds, contextLabel) =>
+                setBatchTagModal({ open: true, trackIds, contextLabel })
+              }
+              onCreatePlaylistFromTracks={(seedTrackIds) =>
+                setCreateModalState({ open: true, seedTrackIds })
+              }
+              onAddTracksToPlaylist={handleAddTracksToPlaylist}
+              onRequestDeleteTracks={(trackIds) =>
+                setPendingConfirm({ kind: 'delete-tracks', trackIds })
+              }
+              onGoToImport={() => setActiveView('transfer')}
+            />
+          )}
 
-        {activeView === 'playlist' && activePlaylist && (
-          <PlaylistView
-            playlist={activePlaylist}
-            tracks={activePlaylistTracks}
-            diff={diffMap.get(activePlaylist.id)!}
-            playStats={audioPlayer.playStats}
-            availableFolders={availableFolders}
-            autoWatchIntervalSec={autoWatchIntervalSec}
-            onChangeAutoWatch={setAutoWatchIntervalSec}
-            activePlayingTrackId={audioPlayer.state.activeTrackId}
-            isAudioPlaying={audioPlayer.state.isPlaying}
-            shuffleMode={audioPlayer.state.shuffleMode}
-            hasPlayableFile={(fileKey) =>
-              fileMapRef.current.has(fileKey) || storedAudioKeys.has(fileKey)
-            }
-            onUpdatePlaylist={handleUpdatePlaylist}
-            onUpdateSyncRule={handleUpdateSyncRule}
-            onReorderTrack={handleReorderTrack}
-            onRemoveTrackFromPlaylist={handleRemoveTrackFromPlaylist}
-            onRequestDeletePlaylist={(playlistId) =>
-              setPendingConfirm({
-                kind: 'delete-playlist',
-                playlistId,
-                name: activePlaylist.name,
-              })
-            }
-            onApplySync={handleRequestApplySync}
-            onPushToYouTube={handleOpenYouTubePush}
-            onInspectTrack={setInspectedTrackId}
-            onOpenBatchTagEditor={(trackIds, contextLabel) =>
-              setBatchTagModal({ open: true, trackIds, contextLabel })
-            }
-            onPlayTrack={audioPlayer.playTrack}
-            onPlayList={audioPlayer.playList}
-            onGoToScanner={() => {
-              setActiveView('scanner');
-              setActivePlaylistId(null);
-            }}
-          />
-        )}
+          {activeView === 'playlist' && activePlaylist && (
+            <PlaylistView
+              playlist={activePlaylist}
+              tracks={activePlaylistTracks}
+              diff={diffMap.get(activePlaylist.id)!}
+              playStats={audioPlayer.playStats}
+              availableFolders={availableFolders}
+              autoWatchIntervalSec={autoWatchIntervalSec}
+              onChangeAutoWatch={setAutoWatchIntervalSec}
+              activePlayingTrackId={audioPlayer.state.activeTrackId}
+              isAudioPlaying={audioPlayer.state.isPlaying}
+              shuffleMode={audioPlayer.state.shuffleMode}
+              hasPlayableFile={(fileKey) =>
+                fileMapRef.current.has(fileKey) || storedAudioKeys.has(fileKey)
+              }
+              onUpdatePlaylist={handleUpdatePlaylist}
+              onUpdateSyncRule={handleUpdateSyncRule}
+              onReorderTrack={handleReorderTrack}
+              onRemoveTrackFromPlaylist={handleRemoveTrackFromPlaylist}
+              onRequestDeletePlaylist={(playlistId) =>
+                setPendingConfirm({
+                  kind: 'delete-playlist',
+                  playlistId,
+                  name: activePlaylist.name,
+                })
+              }
+              onApplySync={handleRequestApplySync}
+              onPushToYouTube={handleOpenYouTubePush}
+              onInspectTrack={setInspectedTrackId}
+              onOpenBatchTagEditor={(trackIds, contextLabel) =>
+                setBatchTagModal({ open: true, trackIds, contextLabel })
+              }
+              onPlayTrack={audioPlayer.playTrack}
+              onPlayList={audioPlayer.playList}
+              onGoToScanner={() => {
+                setActiveView('scanner');
+                setActivePlaylistId(null);
+              }}
+            />
+          )}
 
-        {activeView === 'smart-playlist' && activeSmartPlaylist && (
-          <SmartPlaylistView
-            smartPlaylist={activeSmartPlaylist}
-            tracks={activeSmartPlaylistTracks}
-            playStats={audioPlayer.playStats}
-            activePlayingTrackId={audioPlayer.state.activeTrackId}
-            isAudioPlaying={audioPlayer.state.isPlaying}
-            shuffleMode={audioPlayer.state.shuffleMode}
-            hasPlayableFile={(fileKey) =>
-              fileMapRef.current.has(fileKey) || storedAudioKeys.has(fileKey)
-            }
-            onEditRules={(sp) => setSmartPlaylistModal({ open: true, editing: sp })}
-            onDuplicate={handleDuplicateSmartPlaylist}
-            onConvertToStaticPlaylist={handleConvertSmartToStaticPlaylist}
-            onRequestDelete={(sp) =>
-              setPendingConfirm({
-                kind: 'delete-smart-playlist',
-                smartPlaylistId: sp.id,
-                name: sp.name,
-              })
-            }
-            onPlayTrack={audioPlayer.playTrack}
-            onPlayList={audioPlayer.playList}
-            onInspectTrack={setInspectedTrackId}
-            onOpenBatchTagEditor={(trackIds, contextLabel) =>
-              setBatchTagModal({ open: true, trackIds, contextLabel })
-            }
-          />
-        )}
+          {activeView === 'smart-playlist' && activeSmartPlaylist && (
+            <SmartPlaylistView
+              smartPlaylist={activeSmartPlaylist}
+              tracks={activeSmartPlaylistTracks}
+              playStats={audioPlayer.playStats}
+              activePlayingTrackId={audioPlayer.state.activeTrackId}
+              isAudioPlaying={audioPlayer.state.isPlaying}
+              shuffleMode={audioPlayer.state.shuffleMode}
+              hasPlayableFile={(fileKey) =>
+                fileMapRef.current.has(fileKey) || storedAudioKeys.has(fileKey)
+              }
+              onEditRules={(sp) => setSmartPlaylistModal({ open: true, editing: sp })}
+              onDuplicate={handleDuplicateSmartPlaylist}
+              onConvertToStaticPlaylist={handleConvertSmartToStaticPlaylist}
+              onRequestDelete={(sp) =>
+                setPendingConfirm({
+                  kind: 'delete-smart-playlist',
+                  smartPlaylistId: sp.id,
+                  name: sp.name,
+                })
+              }
+              onPlayTrack={audioPlayer.playTrack}
+              onPlayList={audioPlayer.playList}
+              onInspectTrack={setInspectedTrackId}
+              onOpenBatchTagEditor={(trackIds, contextLabel) =>
+                setBatchTagModal({ open: true, trackIds, contextLabel })
+              }
+            />
+          )}
 
-        {activeView === 'sync' && (
-          <SyncQueueView
-            playlists={playlists}
-            trackMap={trackMap}
-            diffMap={diffMap}
-            syncHistory={syncHistory}
-            isScanning={isScanning}
-            hasLiveFolderHandle={hasLiveHandle}
-            onRescanFolder={() => handleRescanWatchedFolder(false)}
-            onRequestApplySync={handleRequestApplySync}
-            onOpenPlaylist={(id) => {
-              setActivePlaylistId(id);
-              setActiveView('playlist');
-            }}
-            onOpenCreatePlaylist={() => setCreateModalState({ open: true, seedTrackIds: [] })}
-          />
-        )}
+          {activeView === 'sync' && (
+            <SyncQueueView
+              playlists={playlists}
+              trackMap={trackMap}
+              diffMap={diffMap}
+              syncHistory={syncHistory}
+              isScanning={isScanning}
+              hasLiveFolderHandle={hasLiveHandle}
+              onRescanFolder={() => handleRescanWatchedFolder(false)}
+              onRequestApplySync={handleRequestApplySync}
+              onOpenPlaylist={(id) => {
+                setActivePlaylistId(id);
+                setActiveView('playlist');
+              }}
+              onOpenCreatePlaylist={() => setCreateModalState({ open: true, seedTrackIds: [] })}
+            />
+          )}
 
-        {activeView === 'scan-logs' && (
-          <ScanLogView
-            scanLogs={scanLogs}
-            watcherStatus={watcherStatus}
-            watchedFolder={watchedFolder}
-            autoWatchIntervalSec={autoWatchIntervalSec}
-            isScanning={isScanning}
-            scanProgress={scanProgress}
-            onChangeAutoWatch={setAutoWatchIntervalSec}
-            onRescanFolder={() => handleRescanWatchedFolder(false)}
-            onMountFolder={handleMountFolder}
-            onRequestClearLogs={() => setPendingConfirm({ kind: 'clear-scan-logs' })}
-          />
-        )}
+          {activeView === 'scan-logs' && (
+            <ScanLogView
+              scanLogs={scanLogs}
+              watcherStatus={watcherStatus}
+              watchedFolder={watchedFolder}
+              autoWatchIntervalSec={autoWatchIntervalSec}
+              isScanning={isScanning}
+              scanProgress={scanProgress}
+              onChangeAutoWatch={setAutoWatchIntervalSec}
+              onRescanFolder={() => handleRescanWatchedFolder(false)}
+              onMountFolder={handleMountFolder}
+              onRequestClearLogs={() => setPendingConfirm({ kind: 'clear-scan-logs' })}
+            />
+          )}
 
-        {activeView === 'transfer' && (
-          <TransferView
-            tracks={tracks}
-            playlists={playlists}
-            smartPlaylists={smartPlaylists}
-            syncHistory={syncHistory}
-            watchedFolderName={watchedFolderName}
-            availableLocalFolders={availableFolders}
-            currentDevice={currentDevice}
-            devices={devices}
-            folderMappings={folderMappings}
-            trackMap={trackMap}
-            storedAudioKeys={storedAudioKeys}
-            deviceCacheBytes={deviceCacheBytes}
-            hasPlayableFile={(fileKey) =>
-              fileMapRef.current.has(fileKey) || storedAudioKeys.has(fileKey)
-            }
-            getCachedAudioBlob={async (fileKey) =>
-              fileMapRef.current.get(fileKey) ?? (await loadAudioBlob(fileKey))
-            }
-            onRenameCurrentDevice={handleRenameCurrentDevice}
-            onSaveFolderMapping={handleSaveFolderMapping}
-            onUnbindDeviceFromMapping={handleUnbindDeviceFromMapping}
-            onDeleteFolderMapping={handleDeleteFolderMapping}
-            onMarkMappingSynced={handleMarkMappingSynced}
-            onPrepareManifestForPush={handlePrepareManifestForPush}
-            onImportPlaylist={handleImportPlaylist}
-            onRestoreLibraryBackup={handleRestoreLibraryBackup}
-            onSyncFromDriveSourceOfTruth={handleSyncFromDriveSourceOfTruth}
-            onLinkUploadedDriveTracks={handleLinkUploadedDriveTracks}
-            onCacheDriveTrackAudio={handleCacheDriveTrackAudio}
-            onEvictTrackCache={handleEvictTrackCache}
-            onClearAllDeviceCache={handleClearAllDeviceCache}
-            onPlayTrack={audioPlayer.playTrack}
-            onIngestLocalFolderEntries={(entries, folderRootName) =>
-              ingestAudioEntries(entries, {
-                folderRootName,
-                isFullFolderScan: false,
-                source: 'drive-mapping',
-              })
-            }
-            onNotify={(payload) =>
-              pushToast({
-                title: payload.title,
-                description: payload.description,
-                tone: payload.tone ?? 'neutral',
-              })
-            }
-          />
-        )}
+          {activeView === 'transfer' && (
+            <TransferView
+              tracks={tracks}
+              playlists={playlists}
+              smartPlaylists={smartPlaylists}
+              syncHistory={syncHistory}
+              watchedFolderName={watchedFolderName}
+              availableLocalFolders={availableFolders}
+              currentDevice={currentDevice}
+              devices={devices}
+              folderMappings={folderMappings}
+              trackMap={trackMap}
+              storedAudioKeys={storedAudioKeys}
+              deviceCacheBytes={deviceCacheBytes}
+              hasPlayableFile={(fileKey) =>
+                fileMapRef.current.has(fileKey) || storedAudioKeys.has(fileKey)
+              }
+              getCachedAudioBlob={async (fileKey) =>
+                fileMapRef.current.get(fileKey) ?? (await loadAudioBlob(fileKey))
+              }
+              onRenameCurrentDevice={handleRenameCurrentDevice}
+              onSaveFolderMapping={handleSaveFolderMapping}
+              onUnbindDeviceFromMapping={handleUnbindDeviceFromMapping}
+              onDeleteFolderMapping={handleDeleteFolderMapping}
+              onMarkMappingSynced={handleMarkMappingSynced}
+              onPrepareManifestForPush={handlePrepareManifestForPush}
+              onImportPlaylist={handleImportPlaylist}
+              onRestoreLibraryBackup={handleRestoreLibraryBackup}
+              onSyncFromDriveSourceOfTruth={handleSyncFromDriveSourceOfTruth}
+              onLinkUploadedDriveTracks={handleLinkUploadedDriveTracks}
+              onCacheDriveTrackAudio={handleCacheDriveTrackAudio}
+              onEvictTrackCache={handleEvictTrackCache}
+              onClearAllDeviceCache={handleClearAllDeviceCache}
+              onPlayTrack={audioPlayer.playTrack}
+              onIngestLocalFolderEntries={(entries, folderRootName) =>
+                ingestAudioEntries(entries, {
+                  folderRootName,
+                  isFullFolderScan: false,
+                  source: 'drive-mapping',
+                })
+              }
+              onNotify={(payload) =>
+                pushToast({
+                  title: payload.title,
+                  description: payload.description,
+                  tone: payload.tone ?? 'neutral',
+                })
+              }
+            />
+          )}
+        </ViewBoundary>
 
         {/* Persistent Studio Audio Transport Bar (visible whenever library has tracks) */}
         {(tracks.length > 0 || audioPlayer.activeTrack) && (
