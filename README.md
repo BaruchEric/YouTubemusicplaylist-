@@ -82,7 +82,7 @@ cp .env.example .env
 | `GEMINI_API_KEY` | Optional | Enables `/api/metadata/suggest` and `/api/genres/classify`. Without it, all local library, playback, YouTube matching, and Google Drive features still work. |
 | `GEMINI_ALLOWED_EMAILS` | Optional | Comma-separated Google accounts allowed to use the AI endpoints. When unset, any Google account that signs in to the app can use them, within the rate limit. Set it on any server reachable from the internet. |
 | `BIND_HOST` | Optional | Address the server listens on (defaults to `0.0.0.0`). Set `127.0.0.1` to keep a local server off the network. |
-| `APP_URL` | Optional | Public URL of the hosted app (used for self-referential links / OAuth contexts). |
+| `APP_URL` | Unused | AI Studio sets it for applets it hosts. Nothing in this code reads it, and the deployment at music.beric.ca does not set it. |
 | `PORT` | Optional | Server port (defaults to `3000`). |
 | `DISABLE_HMR` | Optional | Set to `true` to disable Vite HMR and file watching. |
 
