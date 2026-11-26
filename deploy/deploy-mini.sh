@@ -56,7 +56,8 @@ sudo systemctl enable "$UNIT" >/dev/null 2>&1
 sudo systemctl restart "$UNIT"
 
 for _ in $(seq 1 20); do
-  if curl -fsS -o /tmp/cratesync-index.html "http://127.0.0.1:$PORT/"; then
+  # Quiet on purpose: the first tries land before the server is listening.
+  if curl -fs -o /tmp/cratesync-index.html "http://127.0.0.1:$PORT/"; then
     break
   fi
   sleep 1
