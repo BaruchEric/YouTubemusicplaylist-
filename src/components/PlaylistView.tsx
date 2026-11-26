@@ -174,7 +174,9 @@ export function PlaylistView({
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       {/* Playlist Header */}
       <div className="px-5 sm:px-8 py-6 border-b border-white/[0.08] bg-[#0F1116] shrink-0">
-        <div className="flex flex-col md:flex-row gap-6 md:items-end justify-between">
+        {/* The seven buttons need about 920px in one line. Beside the title they only fit on a
+            very wide screen, so below that they sit under it and wrap. */}
+        <div className="flex flex-col 2xl:flex-row gap-6 2xl:items-end justify-between">
           <div className="flex items-start gap-5 min-w-0">
             <div className="h-24 w-24 sm:h-28 sm:w-28 rounded-lg bg-[#1A1D24] border border-white/[0.09] overflow-hidden shrink-0 flex items-center justify-center">
               {!coverFailed ? (
