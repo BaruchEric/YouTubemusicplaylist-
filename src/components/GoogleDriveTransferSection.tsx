@@ -69,6 +69,11 @@ import {
   type ManifestFolderState,
 } from '../utils/folderMappings';
 import { clearDeviceCacheMessage, summarizeDeviceCache } from '../utils/deviceCache';
+import {
+  describeCarriedOver,
+  type LibraryPushMerge,
+  type LocalLibraryForPush,
+} from '../utils/libraryMerge';
 import { loadAudioBlob } from '../utils/storage';
 import type { ScannedFileEntry } from '../utils/syncEngine';
 import {
@@ -110,12 +115,13 @@ interface GoogleDriveTransferSectionProps {
   onDeleteFolderMapping: (mappingId: string) => void;
   onMarkMappingSynced: (mappingId: string, deviceId: string) => void;
   /**
-   * Merges a downloaded Drive manifest's devices and folder mappings into this device (or,
-   * given null, changes nothing) and returns the state a push should write to the manifest.
+   * Joins this device's library, devices and folder mappings with a downloaded Drive manifest
+   * (or, given null, with nothing) and returns what a push should write to the manifest.
    */
-  onPrepareFolderStateForManifest: (
-    remote: CrateSyncLibraryBackupPayload | null
-  ) => ManifestFolderState;
+  onPrepareManifestForPush: (
+    remote: CrateSyncLibraryBackupPayload | null,
+    local: LocalLibraryForPush
+  ) => ManifestFolderState & LibraryPushMerge;
   onImportPlaylist: (name: string, seeds: ImportedTrackSeed[]) => void;
   onRestoreLibraryBackup: (
     backup: CrateSyncLibraryBackupPayload,
@@ -255,7 +261,7 @@ export function GoogleDriveTransferSection({
   onUnbindDeviceFromMapping,
   onDeleteFolderMapping,
   onMarkMappingSynced,
-  onPrepareFolderStateForManifest,
+  onPrepareManifestForPush,
   onImportPlaylist,
   onRestoreLibraryBackup,
   onSyncFromDriveSourceOfTruth,
@@ -548,15 +554,17 @@ export function GoogleDriveTransferSection({
   };
 
   /**
-   * Reads the current Drive manifest and merges its devices, folder mappings and tombstones
-   * into this device before a push overwrites it. Otherwise a device that had not pulled
-   * would erase bindings and deletions that other devices wrote since.
+   * Reads the current Drive manifest and joins it with this device's library before a push
+   * overwrites it. Otherwise a device that had not pulled would erase the songs, playlists,
+   * bindings and deletions that other devices wrote since.
    */
-  const mergeManifestFolderStateBeforeWrite = async (
+  const mergeManifestBeforeWrite = async (
     token: string,
-    manifestFileId: string | null
-  ): Promise<ManifestFolderState> => {
-    if (!manifestFileId) return onPrepareFolderStateForManifest(null);
+    manifestFileId: string | null,
+    localTracks: LocalTrack[]
+  ): Promise<ManifestFolderState & LibraryPushMerge> => {
+    const local = { tracks: localTracks, playlists, smartPlaylists, syncHistory };
+    if (!manifestFileId) return onPrepareManifestForPush(null, local);
     let remote: CrateSyncLibraryBackupPayload | null = null;
     try {
       const raw = await downloadDriveFileText(token, {
@@ -568,8 +576,27 @@ export function GoogleDriveTransferSection({
       // The manifest was deleted since the last listing: nothing to merge.
       if (!(err instanceof DriveApiError && err.status === 404)) throw err;
     }
-    return onPrepareFolderStateForManifest(remote);
+    return onPrepareManifestForPush(remote, local);
   };
+
+  /** The manifest payload for a library already joined with what Drive holds. */
+  const buildMergedManifestPayload = (
+    merged: ManifestFolderState & LibraryPushMerge,
+    musicFolder: { id: string; name: string }
+  ): CrateSyncLibraryBackupPayload =>
+    buildLibraryBackupPayload({
+      tracks: merged.library.tracks,
+      playlists: merged.library.playlists,
+      smartPlaylists: merged.library.smartPlaylists,
+      syncHistory: merged.library.syncHistory,
+      libraryTombstones: merged.library.tombstones,
+      watchedFolderName,
+      driveMusicFolderId: musicFolder.id,
+      driveMusicFolderName: musicFolder.name,
+      devices: merged.devices,
+      folderMappings: merged.folderMappings,
+      folderMappingTombstones: merged.folderMappingTombstones,
+    });
 
   // Canonical source-of-truth manifest file (prioritizes cratesync-source-of-truth.json)
   const canonicalManifest = useMemo(() => {
@@ -1120,6 +1147,8 @@ export function GoogleDriveTransferSection({
                 driveModifiedTime: uploaded.modifiedTime,
                 drivePath: mapping.driveFolderName,
               });
+              // Saved per file: if a later upload fails, the next sync skips the songs already up.
+              onLinkUploadedDriveTracks([link]);
               totalUploaded += 1;
             }
           }
@@ -1191,7 +1220,6 @@ export function GoogleDriveTransferSection({
         }
 
         if (uploadedLinks.length > 0) {
-          onLinkUploadedDriveTracks(uploadedLinks);
           // Also persist updated canonical manifest with new driveFileIds + folder mappings
           const rootFolder = await findOrCreateCrateSyncFolder(token);
           const updatedTracks = tracks.map((t) => {
@@ -1203,16 +1231,10 @@ export function GoogleDriveTransferSection({
             canonicalManifest?.name === CRATESYNC_CANONICAL_MANIFEST_NAME
               ? canonicalManifest.id
               : null;
-          const folderState = await mergeManifestFolderStateBeforeWrite(token, existingManifestId);
-          const payload = buildLibraryBackupPayload({
-            tracks: updatedTracks,
-            playlists,
-            smartPlaylists,
-            syncHistory,
-            watchedFolderName,
-            driveMusicFolderId: selectedFolderId || rootFolder.id,
-            driveMusicFolderName: selectedFolderId ? selectedFolderLabel : rootFolder.name,
-            ...folderState,
+          const merged = await mergeManifestBeforeWrite(token, existingManifestId, updatedTracks);
+          const payload = buildMergedManifestPayload(merged, {
+            id: selectedFolderId || rootFolder.id,
+            name: selectedFolderId ? selectedFolderLabel : rootFolder.name,
           });
           await syncCanonicalManifestToDrive(token, payload, {
             existingFileId: existingManifestId,
@@ -1326,10 +1348,8 @@ export function GoogleDriveTransferSection({
             driveModifiedTime: uploadedFile.modifiedTime,
             drivePath: targetDriveFolderName,
           });
-        }
-
-        if (uploadedLinks.length > 0) {
-          onLinkUploadedDriveTracks(uploadedLinks);
+          // Saved per file: if a later upload fails, the next push skips the songs already up.
+          onLinkUploadedDriveTracks([link]);
         }
 
         // 2. Build canonical manifest including newly assigned driveFileIds + cross-device folder mappings
@@ -1345,21 +1365,17 @@ export function GoogleDriveTransferSection({
           activeItem: CRATESYNC_CANONICAL_MANIFEST_NAME,
         });
 
-        const folderState = await mergeManifestFolderStateBeforeWrite(
+        const merged = await mergeManifestBeforeWrite(
           token,
-          action.existingManifestId
+          action.existingManifestId,
+          updatedTracksForManifest
         );
-        const payload = buildLibraryBackupPayload({
-          tracks: updatedTracksForManifest,
-          playlists,
-          smartPlaylists,
-          syncHistory,
-          watchedFolderName,
-          driveMusicFolderId: selectedFolderId || defaultFolder.id,
-          driveMusicFolderName: selectedFolderId ? selectedFolderLabel : defaultFolder.name,
-          ...folderState,
+        const payload = buildMergedManifestPayload(merged, {
+          id: selectedFolderId || defaultFolder.id,
+          name: selectedFolderId ? selectedFolderLabel : defaultFolder.name,
         });
-        const mappingCount = folderState.folderMappings.length;
+        const mappingCount = merged.folderMappings.length;
+        const keptFromOthers = describeCarriedOver(merged.carriedOver);
 
         const syncedManifest = await syncCanonicalManifestToDrive(token, payload, {
           existingFileId: action.existingManifestId,
@@ -1370,8 +1386,8 @@ export function GoogleDriveTransferSection({
           tone: 'success',
           text:
             uploadedLinks.length > 0
-              ? `Pushed ${uploadedLinks.length} song${uploadedLinks.length === 1 ? '' : 's'} and updated "${syncedManifest.name}" in Google Drive (${payload.stats.trackCount} songs · ${payload.stats.playlistCount} playlists · ${mappingCount} folder mapping${mappingCount === 1 ? '' : 's'}).`
-              : `Updated "${syncedManifest.name}" in Google Drive (${payload.stats.trackCount} songs · ${payload.stats.playlistCount} playlists · ${mappingCount} folder mapping${mappingCount === 1 ? '' : 's'}).`,
+              ? `Pushed ${uploadedLinks.length} song${uploadedLinks.length === 1 ? '' : 's'} and updated "${syncedManifest.name}" in Google Drive (${payload.stats.trackCount} songs · ${payload.stats.playlistCount} playlists · ${mappingCount} folder mapping${mappingCount === 1 ? '' : 's'}). ${keptFromOthers}`.trim()
+              : `Updated "${syncedManifest.name}" in Google Drive (${payload.stats.trackCount} songs · ${payload.stats.playlistCount} playlists · ${mappingCount} folder mapping${mappingCount === 1 ? '' : 's'}). ${keptFromOthers}`.trim(),
         });
         onNotify?.({
           title: 'Google Drive source of truth updated',
@@ -1450,10 +1466,11 @@ export function GoogleDriveTransferSection({
       case 'push-source-of-truth':
         return {
           title: 'Push library to Google Drive source of truth?',
-          message:
+          message: `${
             pendingAction.localSongsToUpload.length > 0
               ? `Upload ${pendingAction.localSongsToUpload.length} local audio file${pendingAction.localSongsToUpload.length === 1 ? '' : 's'} into "${CRATESYNC_DRIVE_FOLDER_NAME}" in Google Drive and update "${CRATESYNC_CANONICAL_MANIFEST_NAME}" with ${pendingAction.trackCount} songs, ${pendingAction.playlistCount} playlists, and ${pendingAction.smartPlaylistCount} smart playlists so all playing devices stay in sync.`
-              : `${pendingAction.existingManifestId ? 'Update' : 'Create'} "${CRATESYNC_CANONICAL_MANIFEST_NAME}" in "${CRATESYNC_DRIVE_FOLDER_NAME}" on Google Drive with ${pendingAction.trackCount} songs, ${pendingAction.playlistCount} playlists, and ${pendingAction.smartPlaylistCount} smart playlists.`,
+              : `${pendingAction.existingManifestId ? 'Update' : 'Create'} "${CRATESYNC_CANONICAL_MANIFEST_NAME}" in "${CRATESYNC_DRIVE_FOLDER_NAME}" on Google Drive with ${pendingAction.trackCount} songs, ${pendingAction.playlistCount} playlists, and ${pendingAction.smartPlaylistCount} smart playlists.`
+          } What other devices pushed stays in Drive. Where both changed the same song or playlist, the newer edit wins.`,
           confirmLabel:
             pendingAction.localSongsToUpload.length > 0
               ? `Upload ${pendingAction.localSongsToUpload.length} Song${pendingAction.localSongsToUpload.length === 1 ? '' : 's'} & Sync`

@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from 'react';
 import { X } from 'lucide-react';
 import { BatchTagEditorModal, type BatchTrackPatch } from './components/BatchTagEditorModal';
 import { DashboardView } from './components/DashboardView';
@@ -26,6 +34,7 @@ import type {
   DirectoryWatcherStatus,
   DriveFolderMapping,
   FolderMappingTombstone,
+  LibraryTombstone,
   LocalTrack,
   Playlist,
   PlaylistDiff,
@@ -49,6 +58,19 @@ import {
   type FolderPermission,
   type WatchIntervalSec,
 } from './utils/folderWatch';
+import {
+  dropTombstoned,
+  mergeLibraryForPush,
+  mergeLibraryTombstones,
+  newerTrackEdits,
+  newestWins,
+  parseLibraryTombstones,
+  reviveTombstoned,
+  stampEditedPlaylists,
+  stampEditedTracks,
+  trackTombstone,
+  type LocalLibraryForPush,
+} from './utils/libraryMerge';
 import { planPlaylistImport } from './utils/playlistImport';
 import { countDeviceFiles } from './utils/trackSource';
 import {
@@ -102,8 +124,20 @@ type PendingConfirm =
 
 export default function App() {
   const [hydrated, setHydrated] = useState(false);
-  const [tracks, setTracks] = useState<LocalTrack[]>([]);
-  const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  const [tracks, setTracksRaw] = useState<LocalTrack[]>([]);
+  const [playlists, setPlaylistsRaw] = useState<Playlist[]>([]);
+  // Every change to songs and playlists passes through these two setters, so an edit gets its
+  // updatedAt in one place. Devices settle a record both of them changed by that time.
+  const setTracks = useCallback<Dispatch<SetStateAction<LocalTrack[]>>>((update) => {
+    setTracksRaw((prev) =>
+      stampEditedTracks(prev, typeof update === 'function' ? update(prev) : update, Date.now())
+    );
+  }, []);
+  const setPlaylists = useCallback<Dispatch<SetStateAction<Playlist[]>>>((update) => {
+    setPlaylistsRaw((prev) =>
+      stampEditedPlaylists(prev, typeof update === 'function' ? update(prev) : update, Date.now())
+    );
+  }, []);
   const [smartPlaylists, setSmartPlaylists] = useState<SmartPlaylist[]>([]);
   const [syncHistory, setSyncHistory] = useState<SyncEvent[]>([]);
   const [scanLogs, setScanLogs] = useState<ScanLogEntry[]>([]);
@@ -131,6 +165,16 @@ export default function App() {
   useEffect(() => {
     folderMappingTombstonesRef.current = folderMappingTombstones;
   }, [folderMappingTombstones]);
+  const [libraryTombstones, setLibraryTombstones] = useState<LibraryTombstone[]>([]);
+  const libraryTombstonesRef = useRef<LibraryTombstone[]>(libraryTombstones);
+  useEffect(() => {
+    libraryTombstonesRef.current = libraryTombstones;
+  }, [libraryTombstones]);
+  /** Records deletions, so a merge with Drive does not bring the records back. */
+  const addLibraryTombstones = useCallback((added: LibraryTombstone[]) => {
+    if (added.length === 0) return;
+    setLibraryTombstones((prev) => mergeLibraryTombstones([prev, added], Date.now()));
+  }, []);
   const currentDeviceRef = useRef<SyncDeviceProfile>(currentDevice);
   useEffect(() => {
     currentDeviceRef.current = currentDevice;
@@ -210,6 +254,10 @@ export default function App() {
   useEffect(() => {
     playlistsRef.current = playlists;
   }, [playlists]);
+  const smartPlaylistsRef = useRef<SmartPlaylist[]>(smartPlaylists);
+  useEffect(() => {
+    smartPlaylistsRef.current = smartPlaylists;
+  }, [smartPlaylists]);
 
   const handlePlayRecorded = useCallback(
     (event: {
@@ -338,6 +386,9 @@ export default function App() {
       setDevices(mergeDeviceProfiles(savedState.devices ?? [], [], currentDeviceRef.current));
       setFolderMappings(savedState.folderMappings ?? []);
       setFolderMappingTombstones(mergeFolderMappingTombstones([savedState.folderMappingTombstones]));
+      setLibraryTombstones(
+        mergeLibraryTombstones([parseLibraryTombstones(savedState.libraryTombstones)], Date.now())
+      );
       setStoredAudioKeys(cacheStats.cachedKeys);
       setDeviceCacheBytes(cacheStats.totalBytes);
       if (savedHandle) {
@@ -378,6 +429,7 @@ export default function App() {
       devices,
       folderMappings,
       folderMappingTombstones,
+      libraryTombstones,
     });
   }, [
     hydrated,
@@ -391,6 +443,7 @@ export default function App() {
     devices,
     folderMappings,
     folderMappingTombstones,
+    libraryTombstones,
   ]);
 
   const trackMap = useMemo(() => {
@@ -1482,9 +1535,9 @@ export default function App() {
   const handleRemoveMissingTracks = (trackIds: string[]) => {
     if (trackIds.length === 0) return;
     const delSet = new Set(trackIds);
-    const removedKeys = tracks
-      .filter((t) => delSet.has(t.id))
-      .map((t) => t.fileKey);
+    const removedTracks = tracks.filter((t) => delSet.has(t.id));
+    const removedKeys = removedTracks.map((t) => t.fileKey);
+    addLibraryTombstones(removedTracks.map((t) => trackTombstone(t, Date.now())));
 
     for (const key of removedKeys) {
       fileMapRef.current.delete(key);
@@ -1502,7 +1555,6 @@ export default function App() {
         ...pl,
         trackIds: pl.trackIds.filter((id) => !delSet.has(id)),
         syncedTrackIds: pl.syncedTrackIds.filter((id) => !delSet.has(id)),
-        updatedAt: Date.now(),
       }))
     );
 
@@ -1687,9 +1739,18 @@ export default function App() {
       const now = Date.now();
 
       if (mode === 'replace') {
-        setTracks(backup.tracks);
-        setPlaylists(backup.playlists);
-        setSmartPlaylists(backup.smartPlaylists);
+        // A restore brings records back on purpose, so an earlier deletion must not remove
+        // them again at the next Drive merge.
+        const restored = reviveTombstoned({
+          tracks: backup.tracks,
+          playlists: backup.playlists,
+          smartPlaylists: backup.smartPlaylists,
+          tombstones: libraryTombstonesRef.current,
+          now,
+        });
+        setTracks(restored.tracks);
+        setPlaylists(restored.playlists);
+        setSmartPlaylists(restored.smartPlaylists);
         setSyncHistory(backup.syncHistory);
         if (backup.watchedFolderName) {
           setWatchedFolderName(backup.watchedFolderName);
@@ -1751,8 +1812,15 @@ export default function App() {
         }
       }
 
+      const restored = reviveTombstoned({
+        tracks: tracksToAdd,
+        playlists: [],
+        smartPlaylists: backup.smartPlaylists,
+        tombstones: libraryTombstonesRef.current,
+        now,
+      });
       setTracks((prev) => [
-        ...tracksToAdd,
+        ...restored.tracks,
         ...prev.map((t) => enrichedExisting.get(t.id) ?? t),
       ]);
 
@@ -1809,7 +1877,7 @@ export default function App() {
         setSmartPlaylists((prev) => {
           const existingIds = new Set(prev.map((sp) => sp.id));
           const existingNames = new Set(prev.map((sp) => sp.name.toLowerCase()));
-          const additions = backup.smartPlaylists.filter(
+          const additions = restored.smartPlaylists.filter(
             (sp) => !existingIds.has(sp.id) && !existingNames.has(sp.name.toLowerCase())
           );
           return additions.length > 0 ? [...additions, ...prev] : prev;
@@ -1980,15 +2048,53 @@ export default function App() {
     [pushToast, addFolderMappingTombstone]
   );
 
+  /** Whether this device has the audio of a song, in memory or in its cache. */
+  const holdsAudioOnDevice = useCallback(
+    (track: LocalTrack) =>
+      fileMapRef.current.has(track.fileKey) || storedAudioKeysRef.current.has(track.fileKey),
+    []
+  );
+
   /**
-   * Merges the Drive manifest's devices and folder mappings into this device before a push
-   * writes the manifest, and returns what the push should write. Without this, a push from a
-   * device that had not pulled would overwrite other devices' bindings and tombstones.
+   * Works out what a push writes to the Drive manifest. It joins this device's library, devices
+   * and folder mappings with what the manifest already holds, so a push from a device that had
+   * not pulled does not erase what other devices wrote since. The library on screen stays as it
+   * is. Only the merged deletions and folder state are taken into this device.
    */
-  const handlePrepareFolderStateForManifest = useCallback(
-    (remote: CrateSyncLibraryBackupPayload | null) => {
+  const handlePrepareManifestForPush = useCallback(
+    (
+      remote: CrateSyncLibraryBackupPayload | null,
+      local: LocalLibraryForPush
+    ) => {
+      const now = Date.now();
+      const merged = mergeLibraryForPush({
+        local: { ...local, tombstones: libraryTombstonesRef.current },
+        remote: remote
+          ? {
+              tracks: remote.tracks,
+              playlists: remote.playlists,
+              smartPlaylists: remote.smartPlaylists,
+              syncHistory: remote.syncHistory,
+              tombstones: remote.libraryTombstones ?? [],
+            }
+          : null,
+        holdsAudio: holdsAudioOnDevice,
+        now,
+      });
+      libraryTombstonesRef.current = merged.library.tombstones;
+      setLibraryTombstones(merged.library.tombstones);
+      if (merged.revivedTrackIds.length > 0) {
+        // Another device deleted these songs, but this one holds the files. They stay, and the
+        // same time goes on this device's copy so later pushes do not mark them again.
+        const revived = new Set(merged.revivedTrackIds);
+        setTracks((prev) =>
+          prev.map((track) => (revived.has(track.id) ? { ...track, updatedAt: now } : track))
+        );
+      }
+
       if (!remote) {
         return {
+          ...merged,
           devices: devicesRef.current,
           folderMappings: folderMappingsRef.current,
           folderMappingTombstones: folderMappingTombstonesRef.current,
@@ -1999,7 +2105,7 @@ export default function App() {
         remote.devices ?? [],
         currentDeviceRef.current
       );
-      const merged = mergeFolderMappingState(
+      const folderState = mergeFolderMappingState(
         {
           folderMappings: folderMappingsRef.current,
           folderMappingTombstones: folderMappingTombstonesRef.current,
@@ -2008,14 +2114,14 @@ export default function App() {
         currentDeviceRef.current.id
       );
       devicesRef.current = devicesNext;
-      folderMappingsRef.current = merged.folderMappings;
-      folderMappingTombstonesRef.current = merged.folderMappingTombstones;
+      folderMappingsRef.current = folderState.folderMappings;
+      folderMappingTombstonesRef.current = folderState.folderMappingTombstones;
       setDevices(devicesNext);
-      setFolderMappings(merged.folderMappings);
-      setFolderMappingTombstones(merged.folderMappingTombstones);
-      return { devices: devicesNext, ...merged };
+      setFolderMappings(folderState.folderMappings);
+      setFolderMappingTombstones(folderState.folderMappingTombstones);
+      return { ...merged, devices: devicesNext, ...folderState };
     },
-    []
+    [holdsAudioOnDevice, setTracks]
   );
 
   const handleMarkMappingSynced = useCallback((mappingId: string, deviceId: string) => {
@@ -2211,6 +2317,9 @@ export default function App() {
               coverArtUrl: incoming.coverArtUrl || matched.coverArtUrl,
               cachedOnDeviceAt: isCachedHere ? matched.cachedOnDeviceAt ?? now : null,
               isMissingOnDevice: false,
+              ...(payload.replaceWithSourceOfTruth
+                ? {}
+                : newerTrackEdits(matched, incoming, 'remote')),
             });
             updatedSongs += 1;
           } else {
@@ -2309,7 +2418,6 @@ export default function App() {
       }
 
       const finalTracks = Array.from(nextById.values()).sort((a, b) => b.addedAt - a.addedAt);
-      setTracks(finalTracks);
 
       const remapTrackIds = (ids: string[]): string[] => {
         const seen = new Set<string>();
@@ -2324,6 +2432,8 @@ export default function App() {
         return out;
       };
 
+      let nextPlaylists = playlistsRef.current;
+      let nextSmartPlaylists = smartPlaylistsRef.current;
       let playlistCount = 0;
       if (payload.manifest) {
         const incomingPlaylists = payload.manifest.playlists.map((pl) => ({
@@ -2334,46 +2444,54 @@ export default function App() {
         playlistCount = incomingPlaylists.length;
 
         if (payload.replaceWithSourceOfTruth) {
-          setPlaylists(incomingPlaylists);
-          setSmartPlaylists(payload.manifest.smartPlaylists);
+          nextPlaylists = incomingPlaylists;
+          nextSmartPlaylists = payload.manifest.smartPlaylists;
           setSyncHistory(payload.manifest.syncHistory);
         } else {
-          setPlaylists((prev) => {
-            const byPlId = new Map(prev.map((p) => [p.id, p]));
-            const merged = [...prev];
-            for (const incomingPl of incomingPlaylists) {
-              const existing = byPlId.get(incomingPl.id);
-              if (existing) {
-                const idx = merged.findIndex((p) => p.id === existing.id);
-                if (idx !== -1) {
-                  merged[idx] = {
-                    ...incomingPl,
-                    trackIds: Array.from(new Set([...incomingPl.trackIds, ...existing.trackIds])),
-                  };
-                }
-              } else {
-                merged.unshift(incomingPl);
-              }
-            }
-            return merged;
-          });
+          // A playlist both sides have is taken whole from the side that changed it last. Joining
+          // the two track lists, as this used to, brought back every song removed on one device.
+          nextPlaylists = newestWins(nextPlaylists, incomingPlaylists, 'remote');
 
-          if (payload.manifest.smartPlaylists.length > 0) {
-            setSmartPlaylists((prev) => {
-              const ids = new Set(prev.map((sp) => sp.id));
-              const names = new Set(prev.map((sp) => sp.name.toLowerCase()));
-              const additions = payload.manifest!.smartPlaylists.filter(
-                (sp) => !ids.has(sp.id) && !names.has(sp.name.toLowerCase())
-              );
-              return additions.length > 0 ? [...additions, ...prev] : prev;
-            });
-          }
+          // A smart playlist from Drive is skipped when a local one already uses its name.
+          const localSmartIds = new Set(nextSmartPlaylists.map((sp) => sp.id));
+          const localSmartNames = new Set(nextSmartPlaylists.map((sp) => sp.name.toLowerCase()));
+          nextSmartPlaylists = newestWins(
+            nextSmartPlaylists,
+            payload.manifest.smartPlaylists.filter(
+              (sp) => localSmartIds.has(sp.id) || !localSmartNames.has(sp.name.toLowerCase())
+            ),
+            'remote'
+          );
         }
       }
 
+      // Deletions made on other devices apply here too. Replacing the library with Drive's copy
+      // applies none: whatever Drive holds comes back, marked as changed now so the next merge
+      // does not delete it again.
+      const tombstones = mergeLibraryTombstones(
+        [libraryTombstonesRef.current, payload.manifest?.libraryTombstones],
+        now
+      );
+      const merging = {
+        tracks: finalTracks,
+        playlists: nextPlaylists,
+        smartPlaylists: nextSmartPlaylists,
+        tombstones,
+        now,
+      };
+      const next = payload.replaceWithSourceOfTruth
+        ? reviveTombstoned(merging)
+        : dropTombstoned({ ...merging, holdsAudio: holdsAudioOnDevice });
+
+      libraryTombstonesRef.current = tombstones;
+      setLibraryTombstones(tombstones);
+      setTracks(next.tracks);
+      setPlaylists(next.playlists);
+      setSmartPlaylists(next.smartPlaylists);
+
       return { addedSongs, updatedSongs, playlistCount, syncedTrackIds };
     },
-    []
+    [holdsAudioOnDevice, setTracks, setPlaylists]
   );
 
   const handleLinkUploadedDriveTracks = useCallback(
@@ -2444,12 +2562,18 @@ export default function App() {
     if (!pendingConfirm) return;
 
     if (pendingConfirm.kind === 'delete-playlist') {
+      addLibraryTombstones([
+        { kind: 'playlist', id: pendingConfirm.playlistId, deletedAt: Date.now() },
+      ]);
       setPlaylists((prev) => prev.filter((p) => p.id !== pendingConfirm.playlistId));
       if (activePlaylistId === pendingConfirm.playlistId) {
         setActivePlaylistId(null);
         setActiveView('dashboard');
       }
     } else if (pendingConfirm.kind === 'delete-smart-playlist') {
+      addLibraryTombstones([
+        { kind: 'smart-playlist', id: pendingConfirm.smartPlaylistId, deletedAt: Date.now() },
+      ]);
       setSmartPlaylists((prev) => prev.filter((sp) => sp.id !== pendingConfirm.smartPlaylistId));
       if (activeSmartPlaylistId === pendingConfirm.smartPlaylistId) {
         setActiveSmartPlaylistId(null);
@@ -2463,9 +2587,9 @@ export default function App() {
       });
     } else if (pendingConfirm.kind === 'delete-tracks') {
       const delSet = new Set(pendingConfirm.trackIds);
-      const removedKeys = tracks
-        .filter((t) => delSet.has(t.id))
-        .map((t) => t.fileKey);
+      const removedTracks = tracks.filter((t) => delSet.has(t.id));
+      const removedKeys = removedTracks.map((t) => t.fileKey);
+      addLibraryTombstones(removedTracks.map((t) => trackTombstone(t, Date.now())));
       for (const key of removedKeys) {
         fileMapRef.current.delete(key);
       }
@@ -2489,9 +2613,9 @@ export default function App() {
     } else if (pendingConfirm.kind === 'remove-duplicates') {
       const delSet = new Set(pendingConfirm.trackIds);
       const { remapToKeep } = pendingConfirm;
-      const removedKeys = tracks
-        .filter((t) => delSet.has(t.id))
-        .map((t) => t.fileKey);
+      const removedTracks = tracks.filter((t) => delSet.has(t.id));
+      const removedKeys = removedTracks.map((t) => t.fileKey);
+      addLibraryTombstones(removedTracks.map((t) => trackTombstone(t, Date.now())));
       for (const key of removedKeys) {
         fileMapRef.current.delete(key);
       }
@@ -2518,7 +2642,6 @@ export default function App() {
           ...pl,
           trackIds: remapIds(pl.trackIds),
           syncedTrackIds: remapIds(pl.syncedTrackIds),
-          updatedAt: Date.now(),
         }))
       );
       if (audioPlayer.state.activeTrackId && delSet.has(audioPlayer.state.activeTrackId)) {
@@ -3009,7 +3132,7 @@ export default function App() {
             onUnbindDeviceFromMapping={handleUnbindDeviceFromMapping}
             onDeleteFolderMapping={handleDeleteFolderMapping}
             onMarkMappingSynced={handleMarkMappingSynced}
-            onPrepareFolderStateForManifest={handlePrepareFolderStateForManifest}
+            onPrepareManifestForPush={handlePrepareManifestForPush}
             onImportPlaylist={handleImportPlaylist}
             onRestoreLibraryBackup={handleRestoreLibraryBackup}
             onSyncFromDriveSourceOfTruth={handleSyncFromDriveSourceOfTruth}

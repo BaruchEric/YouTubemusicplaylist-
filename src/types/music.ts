@@ -35,6 +35,11 @@ export interface LocalTrack {
   drivePath?: string | null;
   /** Timestamp when this song's audio binary was cached locally on this playing device */
   cachedOnDeviceAt?: number | null;
+  /**
+   * When the tags or the YouTube match last changed (ms). Two devices that both edited a song
+   * settle it by this: the newer edit wins. Songs saved before the field existed count as 0.
+   */
+  updatedAt?: number;
 }
 
 export type PlayEventOutcome = 'completed' | 'skipped';
@@ -270,3 +275,13 @@ export interface DriveFolderMapping {
   /** Per-device local folder bindings keyed by SyncDeviceProfile.id */
   deviceBindings: Record<string, DeviceFolderBinding>;
 }
+
+/**
+ * Records a deleted song, playlist or smart playlist, so that merging an older copy from Drive
+ * or another device does not bring it back. A song is matched by ID, Drive file or file key,
+ * because two devices give the same file different IDs.
+ */
+export type LibraryTombstone =
+  | { kind: 'track'; id: string; fileKey: string; driveFileId: string | null; deletedAt: number }
+  | { kind: 'playlist'; id: string; deletedAt: number }
+  | { kind: 'smart-playlist'; id: string; deletedAt: number };

@@ -22,6 +22,7 @@ All primary domain interfaces are defined in [`src/types/music.ts`](../src/types
 
 - **`LocalTrack`**: Represents an indexed audio file, a Drive catalog stub, or a list-only entry. A list-only entry comes from an imported playlist file and has no audio behind it: `format` is `YT` (the list gave a video ID) or `LIST`, and `fileSize` is `0`. [`trackSource.ts`](../src/utils/trackSource.ts) tells the kinds apart; folder rules and file counts leave list-only entries out.
   - Identity: `id` (UUID), `fileKey` (`<relativePath.toLowerCase()>::<fileSize>`), optional SHA-256 `contentHash`.
+  - `updatedAt` (optional): when the tags or the YouTube match last changed. Two devices that edited the same song settle it by this.
   - Metadata: `title`, `artist`, `album`, `genre`, `year`, `trackNumber`, `duration`, `format`, `fileSize`, `coverArtUrl`.
   - Sync & playback state: `isMissingOnDevice`, `youtubeVideoId`, `youtubeTitle`, `matchStatus` (`unmatched | matched | skipped`), `playCount`, `skipCount`, `lastPlayedAt`.
   - Google Drive linkage: `driveFileId`, `driveModifiedTime`, `drivePath`, `cachedOnDeviceAt`.
@@ -41,7 +42,7 @@ Managed in [`src/utils/storage.ts`](../src/utils/storage.ts) with three object s
 
 | Store | Key | Purpose |
 | --- | --- | --- |
-| `app_state` | `'main'` | Persists `tracks`, `playlists`, `smartPlaylists`, `syncHistory`, `watchedFolderName`, `lastScannedAt`, `devices`, `folderMappings`, and `folderMappingTombstones` (falls back to `localStorage` key `cratesync_library_v1` if IndexedDB is unavailable). |
+| `app_state` | `'main'` | Persists `tracks`, `playlists`, `smartPlaylists`, `syncHistory`, `watchedFolderName`, `lastScannedAt`, `devices`, `folderMappings`, `folderMappingTombstones` and `libraryTombstones` (falls back to `localStorage` key `cratesync_library_v1` if IndexedDB is unavailable). |
 | `dir_handles` | `'watched_root'` | Stores the mounted `FileSystemDirectoryHandle` so auto-watch and re-scans survive page reloads. |
 | `audio_blobs` | `track.fileKey` | Caches local and Drive-downloaded audio `Blob` objects for offline playback and reload persistence. |
 
@@ -70,13 +71,19 @@ Implemented across [`src/utils/googleAuth.ts`](../src/utils/googleAuth.ts), [`sr
    - `https://www.googleapis.com/auth/drive.file` (create/update CrateSync backups and uploaded audio)
 
    Firebase App Check runs beside it: `googleAuth.ts` starts App Check with a `ReCaptchaEnterpriseProvider` for the `recaptchaSiteKey` in `firebase-applet-config.json`, so Firebase Auth requests carry an attestation token. The project enforces App Check for Authentication and Cloud Firestore since 2026-11-24, so a sign-in request without a token is refused. The server never calls Firebase Auth: `server/aiAccess.ts` checks ID tokens locally against Google's published keys, which App Check does not gate.
-2. **Canonical Manifest**: Stored as `cratesync-source-of-truth.json` (`schemaVersion: 1`) inside the `CrateSync Library` Drive folder. Contains tracks, playlists, smart playlists, sync history, `devices`, `folderMappings`, and `folderMappingTombstones` (optional; manifests written before it existed parse with none). Both push paths download the current manifest and merge its devices, mappings and tombstones into the local state before writing, so a device that had not pulled cannot erase other devices' bindings or deletions. Uploads of 5 MB or less use one multipart request; larger files, including big manifests, use a resumable upload that resumes from the byte the session reports after a dropped connection, or starts a fresh session when that count is unreadable.
+2. **Canonical Manifest**: Stored as `cratesync-source-of-truth.json` (`schemaVersion: 1`) inside the `CrateSync Library` Drive folder. Contains tracks, playlists, smart playlists, sync history, `devices`, `folderMappings`, `folderMappingTombstones` and `libraryTombstones` (both optional; manifests written before they existed parse with none). Both push paths download the current manifest and join it with this device's library, devices and mappings before writing, so a device that had not pulled cannot erase what other devices wrote. The rules for songs and playlists are under item 5. Uploads of 5 MB or less use one multipart request; larger files, including big manifests, use a resumable upload that resumes from the byte the session reports after a dropped connection, or starts a fresh session when that count is unreadable.
 3. **Path Translation & Folder Bindings**:
    - Paths are normalized across Windows/macOS/Linux/mobile (`normalizeFolderPath`).
    - When pushing local audio, `resolveDriveMappingForLocalTrack` selects the most specific `push` or `bidirectional` mapping for the current device.
    - When pulling from Drive, `resolveLocalBindingForDriveFolder` and `translateRelativePathForDevice` project remote files onto the current device's local folder structure (or IndexedDB-only cache when unbound).
    - `mergeDeviceProfiles` and `mergeFolderMappingState` merge registries across devices while preserving each device's independent local bindings. `mergeFolderMappingState` unions tombstones (latest per mapping or binding, dropped after 365 days), merges mappings, then removes every binding whose `updatedAt` is not newer than a tombstone covering it, and every mapping left without bindings. Comparing the binding's `updatedAt` rather than the mapping's means a stale device marking a sync cannot bring a deleted mapping back, while a binding saved after the deletion survives.
 4. **On-Demand Streaming & Tag Enrichment**: When playing a Drive-synced stub that is not yet cached locally, `useAudioPlayer` fetches the audio blob from Drive, stores it in `audio_blobs`, and triggers `extractLocalTrack` in [`src/App.tsx`](../src/App.tsx) to populate embedded ID3/FLAC/MP4 tags, cover art, duration, and `contentHash`.
+5. **Merging two devices' libraries** ([`src/utils/libraryMerge.ts`](../src/utils/libraryMerge.ts)):
+   - **Push** writes `mergeLibraryForPush(local, remote)`. A song, playlist or smart playlist that only Drive holds stays in the manifest. A song both sides have is one record under the pushing device's ID, matched by Drive file ID, then ID, then `fileKey`, then file name and size. Remote playlists have their track IDs rewritten to match. The push leaves the library on screen as it was, except for Drive links and deletions, and its result message counts what it kept from other devices.
+   - **Conflicts** go to the newer `updatedAt`. For a song that covers the tags and the YouTube match only, since the rest of a track describes the file on one device. A playlist or smart playlist is taken whole from the side that changed it last. On a tie the pushing device wins a push and Drive wins a pull. `setTracks` and `setPlaylists` in `App.tsx` are wrappers that stamp `updatedAt` on every edit (`stampEditedTracks`, `stampEditedPlaylists`), so no handler has to remember to.
+   - **Deletions** are `LibraryTombstone` records, written when a song, playlist or smart playlist is deleted and dropped after 365 days. A tombstone removes a playlist whose `updatedAt` is not newer than it. It removes a song whose `updatedAt` and `addedAt` are both not newer, and only on a device that does not hold the audio. A device that has the file keeps the song and marks it changed, which ends the deletion everywhere: the library follows the folder, so the next scan would add the song back anyway.
+   - **Pull** in merge mode applies the same rules with `newestWins`, `newerTrackEdits` and `dropTombstoned`. Mirror mode takes Drive's copy as it is, and so does a restore from a backup file. Both mark whatever they bring back as changed (`reviveTombstoned`), so an earlier deletion does not remove it again.
+   - Each uploaded file's Drive link is saved as soon as that upload finishes. A push that fails part way does not upload the same songs again.
 
 ## Audio Playback Pipeline
 
@@ -118,6 +125,7 @@ Managed by [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts), [`sr
 | `googleAuth.ts` | Firebase Google OAuth sign-in/out, in-memory Drive token management, Firebase ID tokens for the AI endpoints |
 | `googleDriveApi.ts` | Google Drive v3 client (folder scanning, multipart and resumable uploads, downloads, manifest I/O, retry/backoff) |
 | `folderMappings.ts` | Device profiles, cross-platform path normalization, Drive-to-local binding resolution, merging & tombstones |
+| `libraryMerge.ts` | Joins two devices' songs and playlists for a push or a pull: newest edit wins, deletions as tombstones, edit stamps |
 | `youtubeLinks.ts` | YouTube ID/playlist URL extraction, queue batch builders, M3U8/CSV/JSON/TXT import & export |
 | `smartPlaylists.ts` | Smart Playlist rule definitions, field metadata, and evaluation/sorting engine |
 | `smartSearch.ts` | Global search tokenizer, query operator parser, and scored track/album/genre/playlist matching |

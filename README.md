@@ -21,6 +21,7 @@
 - **Google Drive as Source of Truth**: Sign in with Google via Firebase Auth using least-privilege Drive OAuth scopes (`drive.readonly` and `drive.file`, with access tokens held strictly in memory).
 - **Canonical Library Manifest**: Back up and synchronize tracks, playlists, smart playlists, sync history, device registries, and folder mappings via `cratesync-source-of-truth.json` inside the `CrateSync Library` Drive folder.
 - **Cross-Device Folder Mappings**: Register each playing device (`SyncDeviceProfile`) and bind Google Drive folders to device-specific local folder paths (`DriveFolderMapping`) with configurable sync directions (`pull`, `push`, `bidirectional`) and optional offline audio caching. Deleting a mapping or unbinding a device writes a tombstone to the manifest, so the deletion reaches every device instead of coming back on the next merge. Each push reads the current manifest and merges its devices, mappings and tombstones before writing.
+- **Two Devices, One Library**: A push joins this device's songs and playlists with what Drive already holds, so it never drops what another device pushed. Where both changed the same song or playlist, the newer edit wins. Deleting a song, playlist or smart playlist is recorded, so a merge does not bring it back. A device that still has a deleted song's file keeps the song. A push that fails part way does not upload the same songs again.
 - **Resilient Drive API Client**: Automatic exponential backoff retries for transient rate limits (`429` / `userRateLimitExceeded`) and `5xx` errors. Files over 5 MB (large audio files and big library manifests) go up as resumable uploads, which pick up after a dropped connection.
 
 ### Audio Playback Engine
@@ -106,7 +107,7 @@ npm start
 | `start` | `NODE_ENV=production node server.ts` | Runs the production server, serving `dist/` (run `build` first) |
 | `preview` | `vite preview` | Previews the static Vite production build |
 | `lint` | `tsc --noEmit` | Runs strict TypeScript type-checking |
-| `test` | `bun test` | Runs the unit tests in `tests/` (AI endpoint sign-in check, folder mapping merges, Drive uploads, playlist diffs and imports, the folder watcher, exports) |
+| `test` | `bun test` | Runs the unit tests in `tests/` (AI endpoint sign-in check, folder mapping merges, the two-device library merge, Drive uploads, playlist diffs and imports, the folder watcher, exports) |
 | `clean` | `rm -rf dist server.js` | Removes build artifacts |
 
 ## Backend API

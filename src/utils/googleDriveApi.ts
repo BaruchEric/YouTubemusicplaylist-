@@ -1,6 +1,7 @@
 import type {
   DriveFolderMapping,
   FolderMappingTombstone,
+  LibraryTombstone,
   LocalTrack,
   Playlist,
   SmartPlaylist,
@@ -8,6 +9,7 @@ import type {
   SyncEvent,
 } from '../types/music';
 import { mergeFolderMappingTombstones } from './folderMappings';
+import { parseLibraryTombstones } from './libraryMerge';
 
 const DRIVE_FILES_ENDPOINT = 'https://www.googleapis.com/drive/v3/files';
 const DRIVE_UPLOAD_ENDPOINT = 'https://www.googleapis.com/upload/drive/v3/files';
@@ -101,6 +103,8 @@ export interface CrateSyncLibraryBackupPayload {
   folderMappings?: DriveFolderMapping[];
   /** Deleted mappings and removed bindings, so merges on other devices do not restore them. */
   folderMappingTombstones?: FolderMappingTombstone[];
+  /** Deleted songs, playlists and smart playlists, so a push from another device does not restore them. */
+  libraryTombstones?: LibraryTombstone[];
 }
 
 async function parseDriveError(res: Response, fallbackMessage: string): Promise<DriveApiError> {
@@ -207,6 +211,7 @@ export function buildLibraryBackupPayload(params: {
   devices?: SyncDeviceProfile[];
   folderMappings?: DriveFolderMapping[];
   folderMappingTombstones?: FolderMappingTombstone[];
+  libraryTombstones?: LibraryTombstone[];
 }): CrateSyncLibraryBackupPayload {
   const portableTracks: LocalTrack[] = params.tracks.map((track) => ({
     ...track,
@@ -243,6 +248,7 @@ export function buildLibraryBackupPayload(params: {
     devices: params.devices ?? [],
     folderMappings: params.folderMappings ?? [],
     folderMappingTombstones: params.folderMappingTombstones ?? [],
+    libraryTombstones: params.libraryTombstones ?? [],
   };
 }
 
@@ -1863,6 +1869,7 @@ export function parseLibraryBackupPayload(rawText: string): CrateSyncLibraryBack
       devices: Array.isArray(parsed.devices) ? parsed.devices : [],
       folderMappings: Array.isArray(parsed.folderMappings) ? parsed.folderMappings : [],
       folderMappingTombstones: mergeFolderMappingTombstones([parsed.folderMappingTombstones]),
+      libraryTombstones: parseLibraryTombstones(parsed.libraryTombstones),
     };
   } catch {
     return null;

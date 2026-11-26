@@ -1,6 +1,7 @@
 import type {
   DriveFolderMapping,
   FolderMappingTombstone,
+  LibraryTombstone,
   LocalTrack,
   Playlist,
   ScanLogEntry,
@@ -29,6 +30,8 @@ export interface PersistedLibraryState {
   devices?: SyncDeviceProfile[];
   folderMappings?: DriveFolderMapping[];
   folderMappingTombstones?: FolderMappingTombstone[];
+  /** Deleted songs, playlists and smart playlists, kept so a Drive merge does not restore them. */
+  libraryTombstones?: LibraryTombstone[];
 }
 
 const DEFAULT_STATE: PersistedLibraryState = {
@@ -42,6 +45,7 @@ const DEFAULT_STATE: PersistedLibraryState = {
   devices: [],
   folderMappings: [],
   folderMappingTombstones: [],
+  libraryTombstones: [],
 };
 
 const LS_FALLBACK_KEY = 'cratesync_library_v1';
