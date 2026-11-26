@@ -7,6 +7,7 @@ import {
   Clock,
   Download,
   FolderOpen,
+  Pause,
   Radio,
   RefreshCw,
   ScrollText,
@@ -21,6 +22,8 @@ import type {
   ScanTriggerSource,
   WatchedFolderInfo,
 } from '../types/music';
+import { parseWatchInterval, type WatchIntervalSec } from '../utils/folderWatch';
+import { buildScanLogExport } from '../utils/scanLogExport';
 import { formatRelativeTime, triggerFileDownload } from '../utils/youtubeLinks';
 
 type LogFilter = 'all' | 'errors' | 'background' | 'manual';
@@ -29,10 +32,10 @@ interface ScanLogViewProps {
   scanLogs: ScanLogEntry[];
   watcherStatus: DirectoryWatcherStatus;
   watchedFolder: WatchedFolderInfo | null;
-  autoWatchIntervalSec: 0 | 30 | 120 | 300;
+  autoWatchIntervalSec: WatchIntervalSec;
   isScanning: boolean;
   scanProgress: { processed: number; total: number } | null;
-  onChangeAutoWatch: (sec: 0 | 30 | 120 | 300) => void;
+  onChangeAutoWatch: (sec: WatchIntervalSec) => void;
   onRescanFolder: () => void;
   onMountFolder: () => void;
   onRequestClearLogs: () => void;
@@ -73,7 +76,7 @@ function formatDurationMs(ms: number): string {
   return `${mins}m ${rem}s`;
 }
 
-function formatWatchInterval(sec: 0 | 30 | 120 | 300): string {
+function formatWatchInterval(sec: WatchIntervalSec): string {
   if (sec === 0) return 'Manual only';
   if (sec === 30) return 'Every 30s';
   if (sec === 120) return 'Every 2m';
@@ -168,20 +171,15 @@ export function ScanLogView({
 
   const handleExportLogs = () => {
     if (scanLogs.length === 0) return;
-    const payload = JSON.stringify(
-      {
-        exportedAt: new Date().toISOString(),
+    triggerFileDownload(
+      buildScanLogExport({
+        scanLogs,
         watcherStatus,
-        watchedFolder: watchedFolder?.name ?? null,
+        watchedFolderName: watchedFolder?.name ?? null,
         autoWatchIntervalSec,
-        totalScans: scanLogs.length,
-        logs: scanLogs,
-      },
-      null,
-      2
+        now: new Date(),
+      })
     );
-    const stamp = new Date().toISOString().slice(0, 10);
-    triggerFileDownload(`cratesync-scan-logs-${stamp}.json`, payload, 'application/json');
   };
 
   const watcherLabel =
@@ -189,7 +187,9 @@ export function ScanLogView({
       ? 'Syncing'
       : watcherStatus === 'watching'
         ? 'Watching'
-        : 'Idle';
+        : watcherStatus === 'paused'
+          ? 'Paused'
+          : 'Idle';
 
   return (
     <div className="flex-1 overflow-y-auto px-5 py-6 sm:px-8">
@@ -213,9 +213,7 @@ export function ScanLogView({
                 <select
                   aria-label="Background watcher interval"
                   value={autoWatchIntervalSec}
-                  onChange={(e) =>
-                    onChangeAutoWatch(Number(e.target.value) as 0 | 30 | 120 | 300)
-                  }
+                  onChange={(e) => onChangeAutoWatch(parseWatchInterval(e.target.value))}
                   className="bg-transparent text-white font-medium focus:outline-none cursor-pointer"
                 >
                   <option value={0} className="bg-[#13151B] text-white">
@@ -291,13 +289,17 @@ export function ScanLogView({
                 <RefreshCw className="h-4 w-4 animate-spin text-[#FF4D64] shrink-0" />
               ) : watcherStatus === 'watching' ? (
                 <Radio className="h-4 w-4 text-[#22C55E] shrink-0" />
+              ) : watcherStatus === 'paused' ? (
+                <Pause className="h-4 w-4 text-[#F59E0B] shrink-0" />
               ) : (
                 <Clock className="h-4 w-4 text-[#6B7280] shrink-0" />
               )}
               <span>{watcherLabel}</span>
             </div>
             <div className="mt-1 text-xs text-[#6B7280] truncate font-mono tabular-nums">
-              {watchedFolder?.hasLiveHandle
+              {watcherStatus === 'paused'
+                ? 'Press Scan Now to allow folder access'
+                : watchedFolder?.hasLiveHandle
                 ? `${watchedFolder.name} · ${formatWatchInterval(autoWatchIntervalSec)}`
                 : watchedFolder
                   ? `${watchedFolder.name} · Manual`

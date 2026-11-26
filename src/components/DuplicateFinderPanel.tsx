@@ -102,7 +102,11 @@ export function DuplicateFinderPanel({
 
   const handleExportReport = () => {
     const csv = exportDuplicatesReportToCSV(groups);
-    triggerFileDownload(csv, 'cratesync-duplicate-report.csv', 'text/csv;charset=utf-8');
+    triggerFileDownload({
+      content: csv,
+      fileName: 'cratesync-duplicate-report.csv',
+      mimeType: 'text/csv;charset=utf-8',
+    });
   };
 
   return (

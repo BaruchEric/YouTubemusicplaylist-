@@ -29,7 +29,6 @@ export function CreatePlaylistModal({
   const [youtubePlaylistUrl, setYoutubePlaylistUrl] = useState('');
   const [autoAddNewFiles, setAutoAddNewFiles] = useState(true);
   const [removeMissingFiles, setRemoveMissingFiles] = useState(true);
-  const [autoScanIntervalSec, setAutoScanIntervalSec] = useState<0 | 30 | 120 | 300>(120);
   const [folderFilter, setFolderFilter] = useState('');
 
   useEffect(() => {
@@ -39,7 +38,6 @@ export function CreatePlaylistModal({
       setYoutubePlaylistUrl('');
       setAutoAddNewFiles(true);
       setRemoveMissingFiles(true);
-      setAutoScanIntervalSec(120);
       setFolderFilter(defaultFolderName ?? '');
     }
   }, [isOpen, defaultFolderName]);
@@ -66,7 +64,6 @@ export function CreatePlaylistModal({
       syncRule: {
         autoAddNewFiles,
         removeMissingFiles,
-        autoScanIntervalSec,
         folderFilter: folderFilter.trim(),
       },
     });
@@ -197,25 +194,6 @@ export function CreatePlaylistModal({
                 Queue removals when local audio files are deleted from device storage
               </span>
             </label>
-
-            <div className="flex items-center justify-between gap-4 pt-1">
-              <label htmlFor="pl-interval" className="text-xs text-[#9CA3AF]">
-                Auto-watch scan interval
-              </label>
-              <select
-                id="pl-interval"
-                value={autoScanIntervalSec}
-                onChange={(e) =>
-                  setAutoScanIntervalSec(Number(e.target.value) as 0 | 30 | 120 | 300)
-                }
-                className="px-3 py-1.5 rounded-md bg-[#0D0F13] border border-white/[0.1] text-xs font-mono text-white focus:border-[#FF1F3D] focus:outline-none"
-              >
-                <option value={0}>Manual only</option>
-                <option value={30}>Every 30s</option>
-                <option value={120}>Every 2m</option>
-                <option value={300}>Every 5m</option>
-              </select>
-            </div>
           </div>
 
           <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-white/[0.07]">

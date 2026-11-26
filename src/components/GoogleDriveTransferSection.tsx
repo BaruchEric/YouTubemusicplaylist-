@@ -68,6 +68,7 @@ import {
   trackMatchesLocalFolder,
   type ManifestFolderState,
 } from '../utils/folderMappings';
+import { clearDeviceCacheMessage, summarizeDeviceCache } from '../utils/deviceCache';
 import { loadAudioBlob } from '../utils/storage';
 import type { ScannedFileEntry } from '../utils/syncEngine';
 import {
@@ -181,6 +182,8 @@ type PendingDriveAction =
   | {
       kind: 'clear-device-cache';
       cachedCount: number;
+      /** Cached songs that Google Drive has no copy of. */
+      withoutDriveCopyCount: number;
       totalBytes: number;
     }
   | {
@@ -1021,7 +1024,7 @@ export function GoogleDriveTransferSection({
       await onClearAllDeviceCache();
       setStatusMessage({
         tone: 'info',
-        text: 'Cleared cached audio files from this playing device. Google Drive originals remain intact.',
+        text: 'Cleared cached audio from this device. Songs stored in Google Drive download again when played.',
       });
       return;
     }
@@ -1503,7 +1506,11 @@ export function GoogleDriveTransferSection({
       case 'clear-device-cache':
         return {
           title: 'Clear cached offline audio on this playing device?',
-          message: `Remove ${pendingAction.cachedCount} cached audio file${pendingAction.cachedCount === 1 ? '' : 's'} (${formatFileSize(pendingAction.totalBytes)}) from this browser's local cache. Your songs and playlists in Google Drive remain completely safe and can be re-cached on demand whenever you play them.`,
+          message: clearDeviceCacheMessage({
+            cachedCount: pendingAction.cachedCount,
+            withoutDriveCopyCount: pendingAction.withoutDriveCopyCount,
+            sizeLabel: formatFileSize(pendingAction.totalBytes),
+          }),
           confirmLabel: 'Clear Device Cache',
           destructive: true,
         };
@@ -1825,7 +1832,7 @@ export function GoogleDriveTransferSection({
                   onClick={() =>
                     setPendingAction({
                       kind: 'clear-device-cache',
-                      cachedCount: storedAudioKeys.size,
+                      ...summarizeDeviceCache(tracks, storedAudioKeys),
                       totalBytes: deviceCacheBytes,
                     })
                   }
@@ -2546,7 +2553,7 @@ export function GoogleDriveTransferSection({
                 onClick={() =>
                   setPendingAction({
                     kind: 'clear-device-cache',
-                    cachedCount: storedAudioKeys.size,
+                    ...summarizeDeviceCache(tracks, storedAudioKeys),
                     totalBytes: deviceCacheBytes,
                   })
                 }

@@ -170,7 +170,11 @@ export function AudioIntegrityPanel({
     ]);
     const csv = [header.join(','), ...rows.map((row) => row.join(','))].join('\n');
     const stamp = new Date().toISOString().slice(0, 10);
-    triggerFileDownload(csv, `cratesync-audio-integrity-${stamp}.csv`, 'text/csv;charset=utf-8');
+    triggerFileDownload({
+      content: csv,
+      fileName: `cratesync-audio-integrity-${stamp}.csv`,
+      mimeType: 'text/csv;charset=utf-8',
+    });
   };
 
   const progressPct =

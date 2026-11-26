@@ -5,7 +5,7 @@
 ## Features
 
 ### Local Library Scanning & Maintenance
-- **Folder & File Ingestion**: Mount local directories via the File System Access API (`showDirectoryPicker`) in top-level Chromium contexts with automatic `webkitdirectory` and drag-and-drop fallbacks. Supports background auto-watch intervals (`Off`, `30s`, `2m`, `5m`) and missing-file detection.
+- **Folder & File Ingestion**: Mount local directories via the File System Access API (`showDirectoryPicker`) in top-level Chromium contexts with automatic `webkitdirectory` and drag-and-drop fallbacks. Supports background auto-watch intervals (`Off`, `30s`, `2m`, `5m`) and missing-file detection. The interval is one setting for the whole app and is saved in the browser. After a reload the browser withholds folder access until a click, so the watcher shows `Paused` until you click it or press Re-scan.
 - **Native Binary Metadata Parsing**: Extracts title, artist, album, genre, year, track number, duration, and compressed `160x160` JPEG album artwork directly in the browser from ID3v2, ID3v1, FLAC Vorbis comments, and MP4/M4A atoms, with path-based inference fallback.
 - **Supported Audio Formats**: `.mp3`, `.m4a`, `.m4b`, `.m4p`, `.mp4`, `.flac`, `.wav`, `.ogg`, `.oga`, `.opus`, `.aac`, `.wma`, `.aiff`, `.aif`, `.aifc`, `.alac`, `.caf`, `.3gp`, `.amr`, `.webm`.
 - **SHA-256 Duplicate Finder**: Detects exact file duplicates via `fileSize` + SHA-256 content hash (with a size-only fallback for unhashed files), recommends the best canonical copy to keep, and remaps playlist references cleanly on removal.
@@ -14,7 +14,7 @@
 
 ### YouTube Music Matching & Playlist Sync
 - **Track Matching**: Link local tracks to 11-character YouTube / YouTube Music video IDs via URL or ID paste, with pre-filled YouTube Music search links for unmatched tracks.
-- **Sync Queue & Diff Engine**: Configure per-playlist sync rules (`autoAddNewFiles`, `removeMissingFiles`, `autoScanIntervalSec`, `folderFilter`), inspect exact add/remove/missing deltas, apply sync snapshots, and track sync history.
+- **Sync Queue & Diff Engine**: Configure per-playlist sync rules (`autoAddNewFiles`, `removeMissingFiles`, `folderFilter`), inspect exact add/remove/missing deltas, apply sync snapshots, and track sync history.
 - **Import & Export**: Launch instant YouTube Music queues or export/import playlists in **M3U8**, **CSV**, **JSON**, and **Plain Text** formats.
 
 ### Multi-Device Google Drive Sync
@@ -106,7 +106,7 @@ npm start
 | `start` | `NODE_ENV=production node server.ts` | Runs the production server, serving `dist/` (run `build` first) |
 | `preview` | `vite preview` | Previews the static Vite production build |
 | `lint` | `tsc --noEmit` | Runs strict TypeScript type-checking |
-| `test` | `bun test` | Runs the unit tests in `tests/` (AI endpoint sign-in check, folder mapping merges, Drive uploads) |
+| `test` | `bun test` | Runs the unit tests in `tests/` (AI endpoint sign-in check, folder mapping merges, Drive uploads, playlist diffs and imports, the folder watcher, exports) |
 | `clean` | `rm -rf dist server.js` | Removes build artifacts |
 
 ## Backend API

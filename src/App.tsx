@@ -42,6 +42,16 @@ import type {
 import type { TrackIntegrityRepairPatch } from './components/AudioIntegrityPanel';
 import { evaluateSmartPlaylist } from './utils/smartPlaylists';
 import {
+  loadWatchInterval,
+  queryFolderPermission,
+  resolveWatcherStatus,
+  saveWatchInterval,
+  type FolderPermission,
+  type WatchIntervalSec,
+} from './utils/folderWatch';
+import { planPlaylistImport } from './utils/playlistImport';
+import { countDeviceFiles } from './utils/trackSource';
+import {
   inspectAudioBlobIntegrity,
   summarizeIntegrityIssues,
   type TrackIntegrityScanResult,
@@ -61,6 +71,7 @@ import {
 import {
   computePlaylistDiff,
   extractDroppedEntries,
+  isInFolderScope,
   supportsDirectoryPicker,
   walkDirectoryHandleWithReport,
   type ScannedFileEntry,
@@ -145,7 +156,9 @@ export default function App() {
   const [smartSearchOpen, setSmartSearchOpen] = useState<boolean>(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  const [autoWatchIntervalSec, setAutoWatchIntervalSec] = useState<0 | 30 | 120 | 300>(120);
+  // One interval for the whole app, because there is one watched folder. Saved, so a reload keeps it.
+  const [autoWatchIntervalSec, setAutoWatchIntervalSec] = useState<WatchIntervalSec>(loadWatchInterval);
+  const [folderPermission, setFolderPermission] = useState<FolderPermission>('granted');
   const [isScanning, setIsScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState<{ processed: number; total: number } | null>(
     null
@@ -330,6 +343,7 @@ export default function App() {
       if (savedHandle) {
         dirHandleRef.current = savedHandle;
         setHasLiveHandle(true);
+        setFolderPermission(await queryFolderPermission(savedHandle));
       }
       setHydrated(true);
     })();
@@ -412,20 +426,30 @@ export default function App() {
   }, [diffMap]);
 
   const watchedFolder: WatchedFolderInfo | null = useMemo(() => {
-    if (!watchedFolderName && tracks.length === 0) return null;
+    const deviceFileCount = countDeviceFiles(tracks);
+    if (!watchedFolderName && deviceFileCount === 0) return null;
     return {
       name: watchedFolderName || 'Device Audio',
       lastScannedAt,
-      trackCount: tracks.filter((t) => !t.isMissingOnDevice).length,
+      trackCount: deviceFileCount,
       hasLiveHandle,
     };
   }, [watchedFolderName, lastScannedAt, tracks, hasLiveHandle]);
 
-  const watcherStatus: DirectoryWatcherStatus = useMemo(() => {
-    if (isScanning) return 'syncing';
-    if (hasLiveHandle && autoWatchIntervalSec > 0) return 'watching';
-    return 'idle';
-  }, [isScanning, hasLiveHandle, autoWatchIntervalSec]);
+  const watcherStatus: DirectoryWatcherStatus = useMemo(
+    () =>
+      resolveWatcherStatus({
+        isScanning,
+        hasLiveHandle,
+        intervalSec: autoWatchIntervalSec,
+        permission: folderPermission,
+      }),
+    [isScanning, hasLiveHandle, autoWatchIntervalSec, folderPermission]
+  );
+
+  useEffect(() => {
+    saveWatchInterval(autoWatchIntervalSec);
+  }, [autoWatchIntervalSec]);
 
   const recentScanErrorCount = scanLogs[0]?.errors.length ?? 0;
   const totalScanErrorCount = useMemo(
@@ -894,9 +918,14 @@ export default function App() {
         if (handleWithPerm.queryPermission) {
           const perm = await handleWithPerm.queryPermission({ mode: 'read' });
           if (perm !== 'granted') {
-            if (quiet) return; // Don't prompt on background timer
+            if (quiet) {
+              // Only a click can ask the browser. Say the watch is paused; do not look busy.
+              setFolderPermission('needs-permission');
+              return;
+            }
             const granted = await handleWithPerm.requestPermission?.({ mode: 'read' });
             if (granted !== 'granted') {
+              setFolderPermission('needs-permission');
               const completedAt = Date.now();
               appendScanLog({
                 id: crypto.randomUUID(),
@@ -927,6 +956,7 @@ export default function App() {
           }
         }
 
+        setFolderPermission('granted');
         setIsScanning(true);
         const report = await walkDirectoryHandleWithReport(handle);
         await ingestAudioEntries(report.entries, {
@@ -979,7 +1009,7 @@ export default function App() {
 
   // Auto-watch interval effect when a live directory handle is active
   useEffect(() => {
-    if (!hasLiveHandle || autoWatchIntervalSec === 0) return;
+    if (!hasLiveHandle || autoWatchIntervalSec === 0 || folderPermission !== 'granted') return;
 
     const timer = window.setInterval(() => {
       if (!isScanning && document.visibilityState === 'visible') {
@@ -988,7 +1018,7 @@ export default function App() {
     }, autoWatchIntervalSec * 1000);
 
     return () => window.clearInterval(timer);
-  }, [hasLiveHandle, autoWatchIntervalSec, isScanning, handleRescanWatchedFolder]);
+  }, [hasLiveHandle, autoWatchIntervalSec, folderPermission, isScanning, handleRescanWatchedFolder]);
 
   // Mount local folder: synchronous webkitdirectory picker in iframes/Safari/Firefox,
   // or File System Access API in top-level Chromium windows.
@@ -1009,6 +1039,7 @@ export default function App() {
         const startedAt = Date.now();
         dirHandleRef.current = handle;
         setHasLiveHandle(true);
+        setFolderPermission('granted');
         await saveDirectoryHandle(handle);
         setIsScanning(true);
         try {
@@ -1257,17 +1288,9 @@ export default function App() {
     let initialTrackIds = [...createModalState.seedTrackIds];
 
     // If no explicit seed tracks selected, populate from matching folder filter
-    if (initialTrackIds.length === 0 && tracks.length > 0) {
-      const filter = payload.syncRule.folderFilter.toLowerCase();
+    if (initialTrackIds.length === 0) {
       initialTrackIds = tracks
-        .filter((t) => {
-          if (t.isMissingOnDevice) return false;
-          if (!filter) return true;
-          return (
-            t.folderName.toLowerCase() === filter ||
-            t.relativePath.toLowerCase().startsWith(filter)
-          );
-        })
+        .filter((t) => isInFolderScope(t, payload.syncRule.folderFilter))
         .map((t) => t.id);
     }
 
@@ -1372,7 +1395,6 @@ export default function App() {
       syncRule: {
         autoAddNewFiles: false,
         removeMissingFiles: true,
-        autoScanIntervalSec: autoWatchIntervalSec,
         folderFilter: '',
       },
     };
@@ -1397,7 +1419,6 @@ export default function App() {
   };
 
   const handleUpdateSyncRule = (playlistId: string, syncRule: SyncRule) => {
-    setAutoWatchIntervalSec(syncRule.autoScanIntervalSec);
     handleUpdatePlaylist(playlistId, { syncRule });
   };
 
@@ -1638,84 +1659,26 @@ export default function App() {
   };
 
   const handleImportPlaylist = (name: string, seeds: ImportedTrackSeed[]) => {
-    const now = Date.now();
-    const existingByTitleArtist = new Map<string, LocalTrack>();
-    for (const t of tracks) {
-      existingByTitleArtist.set(`${t.artist.toLowerCase()}::${t.title.toLowerCase()}`, t);
-    }
-
-    const newTracks: LocalTrack[] = [];
-    const playlistTrackIds: string[] = [];
-
-    for (const seed of seeds) {
-      const matchKey = `${seed.artist.toLowerCase()}::${seed.title.toLowerCase()}`;
-      const existing = existingByTitleArtist.get(matchKey);
-
-      if (existing) {
-        playlistTrackIds.push(existing.id);
-        // Enrich existing local track if the imported playlist carried a YouTube video ID
-        if (!existing.youtubeVideoId && seed.youtubeVideoId) {
-          setTracks((prev) =>
-            prev.map((t) =>
-              t.id === existing.id
-                ? { ...t, youtubeVideoId: seed.youtubeVideoId, matchStatus: 'matched' }
-                : t
-            )
-          );
-        }
-      } else {
-        const created: LocalTrack = {
-          id: crypto.randomUUID(),
-          fileKey: `import::${seed.relativePath.toLowerCase()}::${now}::${newTracks.length}`,
-          fileName: seed.title,
-          relativePath: seed.relativePath,
-          folderName: 'Imported',
-          title: seed.title,
-          artist: seed.artist,
-          album: seed.album,
-          year: '',
-          trackNumber: null,
-          duration: seed.duration,
-          format: seed.youtubeVideoId ? 'YT' : 'LIST',
-          fileSize: 0,
-          coverArtUrl: null,
-          addedAt: now,
-          lastSeenAt: now,
-          isMissingOnDevice: false,
-          youtubeVideoId: seed.youtubeVideoId,
-          youtubeTitle: null,
-          matchStatus: seed.youtubeVideoId ? 'matched' : 'unmatched',
-        };
-        newTracks.push(created);
-        playlistTrackIds.push(created.id);
-      }
-    }
-
-    if (newTracks.length > 0) {
-      setTracks((prev) => [...newTracks, ...prev]);
-    }
-
-    const newPlaylist: Playlist = {
-      id: crypto.randomUUID(),
+    const plan = planPlaylistImport({
       name,
-      description: `Imported ${seeds.length} tracks`,
-      createdAt: now,
-      updatedAt: now,
-      lastSyncedAt: now,
-      trackIds: playlistTrackIds,
-      syncedTrackIds: playlistTrackIds,
-      youtubePlaylistUrl: '',
-      watchedFolderName: null,
-      syncRule: {
-        autoAddNewFiles: false,
-        removeMissingFiles: false,
-        autoScanIntervalSec: 0,
-        folderFilter: '',
-      },
-    };
+      seeds,
+      existingTracks: tracks,
+      now: Date.now(),
+      newId: () => crypto.randomUUID(),
+    });
 
-    setPlaylists((prev) => [newPlaylist, ...prev]);
-    setActivePlaylistId(newPlaylist.id);
+    if (plan.newTracks.length > 0 || plan.videoIdsToLink.size > 0) {
+      setTracks((prev) => [
+        ...plan.newTracks,
+        ...prev.map((track): LocalTrack => {
+          const videoId = plan.videoIdsToLink.get(track.id);
+          return videoId ? { ...track, youtubeVideoId: videoId, matchStatus: 'matched' } : track;
+        }),
+      ]);
+    }
+
+    setPlaylists((prev) => [plan.playlist, ...prev]);
+    setActivePlaylistId(plan.playlist.id);
     setActiveView('playlist');
   };
 
@@ -2471,7 +2434,8 @@ export default function App() {
     await refreshDeviceCacheStats();
     pushToast({
       title: 'Device audio cache cleared',
-      description: 'Google Drive source-of-truth songs and playlists remain intact.',
+      description:
+        'Songs stored in Google Drive download again when played. Rescan the folder to play the rest.',
       tone: 'neutral',
     });
   }, [refreshDeviceCacheStats, pushToast]);
@@ -2738,6 +2702,7 @@ export default function App() {
             setActivePlaylistId(null);
             setActiveSmartPlaylistId(null);
           }}
+          onResumeWatch={() => handleRescanWatchedFolder(false)}
           onPickFolder={handleMountFolder}
           onPickFiles={() => filesInputRef.current?.click()}
           onOpenSyncQueue={() => {
@@ -2923,6 +2888,8 @@ export default function App() {
             diff={diffMap.get(activePlaylist.id)!}
             playStats={audioPlayer.playStats}
             availableFolders={availableFolders}
+            autoWatchIntervalSec={autoWatchIntervalSec}
+            onChangeAutoWatch={setAutoWatchIntervalSec}
             activePlayingTrackId={audioPlayer.state.activeTrackId}
             isAudioPlaying={audioPlayer.state.isPlaying}
             shuffleMode={audioPlayer.state.shuffleMode}

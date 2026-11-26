@@ -64,8 +64,6 @@ export interface SyncRule {
   autoAddNewFiles: boolean;
   /** Flag or remove playlist entries when local files disappear on device */
   removeMissingFiles: boolean;
-  /** Auto-scan interval in seconds (0 = manual only) */
-  autoScanIntervalSec: 0 | 30 | 120 | 300;
   /** Optional subfolder prefix filter; empty string matches all scanned tracks */
   folderFilter: string;
 }
@@ -175,7 +173,11 @@ export type WorkspaceView =
   | 'scan-logs'
   | 'transfer';
 
-export type DirectoryWatcherStatus = 'watching' | 'syncing' | 'idle';
+/**
+ * paused: the timer is on, but the browser will not let the app read the folder until the user
+ * allows it again, which happens after every reload.
+ */
+export type DirectoryWatcherStatus = 'watching' | 'syncing' | 'idle' | 'paused';
 
 export type ScanTriggerSource =
   | 'manual-folder'

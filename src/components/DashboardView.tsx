@@ -514,11 +514,11 @@ export function DashboardView({
 
     const csvContent = `\uFEFF${[headers.join(','), ...rows].join('\n')}`;
     const dateStamp = new Date().toISOString().slice(0, 10);
-    triggerFileDownload(
-      csvContent,
-      `cratesync-library-${dateStamp}.csv`,
-      'text/csv;charset=utf-8'
-    );
+    triggerFileDownload({
+      content: csvContent,
+      fileName: `cratesync-library-${dateStamp}.csv`,
+      mimeType: 'text/csv;charset=utf-8',
+    });
 
     setCsvExportedFeedback(true);
     if (csvTimerRef.current !== null) {
@@ -846,7 +846,7 @@ export function DashboardView({
         >
           <div>
             <div className="text-xs text-[#717786]">
-              {activeGenre === 'all' ? 'Device Audio Library' : `${activeGenre} Tracks`}
+              {activeGenre === 'all' ? 'Library Tracks' : `${activeGenre} Tracks`}
             </div>
             <div className="mt-1.5 font-mono text-2xl font-medium tabular-nums text-white">
               {metrics.totalTracks}

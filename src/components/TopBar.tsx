@@ -1,5 +1,6 @@
-import { Clock, FileAudio, FolderPlus, Menu, Radio, RefreshCw, Search } from 'lucide-react';
+import { Clock, FileAudio, FolderPlus, Menu, Pause, Radio, RefreshCw, Search } from 'lucide-react';
 import type { DirectoryWatcherStatus } from '../types/music';
+import type { WatchIntervalSec } from '../utils/folderWatch';
 
 interface TopBarProps {
   sectionLabel: string;
@@ -7,19 +8,21 @@ interface TopBarProps {
   isScanning: boolean;
   watcherStatus: DirectoryWatcherStatus;
   watchedFolderName?: string | null;
-  autoWatchIntervalSec: 0 | 30 | 120 | 300;
+  autoWatchIntervalSec: WatchIntervalSec;
   scanProgress?: { processed: number; total: number } | null;
   recentScanErrorCount?: number;
   pendingSyncCount: number;
   onOpenMobileMenu: () => void;
   onOpenSmartSearch: () => void;
   onOpenScanLogs: () => void;
+  /** Rescans from a click, which lets the browser ask for folder access again. */
+  onResumeWatch: () => void;
   onPickFolder: () => void;
   onPickFiles: () => void;
   onOpenSyncQueue: () => void;
 }
 
-function formatWatchCadence(sec: 0 | 30 | 120 | 300): string {
+function formatWatchCadence(sec: WatchIntervalSec): string {
   if (sec === 30) return '30s';
   if (sec === 120) return '2m';
   if (sec === 300) return '5m';
@@ -39,6 +42,7 @@ export function TopBar({
   onOpenMobileMenu,
   onOpenSmartSearch,
   onOpenScanLogs,
+  onResumeWatch,
   onPickFolder,
   onPickFiles,
   onOpenSyncQueue,
@@ -48,7 +52,9 @@ export function TopBar({
       ? 'Syncing'
       : watcherStatus === 'watching'
         ? 'Watching'
-        : 'Idle';
+        : watcherStatus === 'paused'
+          ? 'Paused'
+          : 'Idle';
 
   const watcherTooltip =
     watcherStatus === 'syncing'
@@ -57,7 +63,9 @@ export function TopBar({
         : 'Background indexer is syncing files — click to view scan logs'
       : watcherStatus === 'watching'
         ? `Watching "${watchedFolderName ?? 'folder'}" every ${formatWatchCadence(autoWatchIntervalSec)} — click to view scan logs`
-        : 'Background directory watcher is idle — click to view scan logs';
+        : watcherStatus === 'paused'
+          ? `Folder watch is paused. Click to let CrateSync read "${watchedFolderName ?? 'the folder'}" again`
+          : 'Background directory watcher is idle — click to view scan logs';
 
   return (
     <header className="h-14 px-3 sm:px-6 border-b border-white/[0.07] bg-[#0B0C0E] flex items-center justify-between gap-2 sm:gap-4 shrink-0">
@@ -99,15 +107,21 @@ export function TopBar({
       <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
         <button
           type="button"
-          onClick={onOpenScanLogs}
+          onClick={watcherStatus === 'paused' ? onResumeWatch : onOpenScanLogs}
           title={watcherTooltip}
-          aria-label={`Directory watcher status: ${watcherLabel}. Open scan logs`}
+          aria-label={
+            watcherStatus === 'paused'
+              ? 'Directory watcher status: Paused. Allow folder access and rescan'
+              : `Directory watcher status: ${watcherLabel}. Open scan logs`
+          }
           className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-[#13151B] border border-white/[0.08] hover:border-white/[0.18] transition-colors whitespace-nowrap shrink-0"
         >
           {watcherStatus === 'syncing' ? (
             <RefreshCw className="h-3.5 w-3.5 animate-spin text-[#FF4D64] shrink-0" />
           ) : watcherStatus === 'watching' ? (
             <Radio className="h-3.5 w-3.5 text-[#22C55E] shrink-0" />
+          ) : watcherStatus === 'paused' ? (
+            <Pause className="h-3.5 w-3.5 text-[#F59E0B] shrink-0" />
           ) : (
             <Clock className="h-3.5 w-3.5 text-[#6B7280] shrink-0" />
           )}
@@ -117,7 +131,9 @@ export function TopBar({
                 ? 'text-white'
                 : watcherStatus === 'watching'
                   ? 'text-[#E5E7EB]'
-                  : 'text-[#8B92A2]'
+                  : watcherStatus === 'paused'
+                    ? 'text-[#FCD34D]'
+                    : 'text-[#8B92A2]'
             }`}
           >
             {watcherLabel}

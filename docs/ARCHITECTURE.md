@@ -20,12 +20,12 @@ Browser (React 19 SPA)
 
 All primary domain interfaces are defined in [`src/types/music.ts`](../src/types/music.ts):
 
-- **`LocalTrack`**: Represents an indexed audio file or Drive catalog stub.
+- **`LocalTrack`**: Represents an indexed audio file, a Drive catalog stub, or a list-only entry. A list-only entry comes from an imported playlist file and has no audio behind it: `format` is `YT` (the list gave a video ID) or `LIST`, and `fileSize` is `0`. [`trackSource.ts`](../src/utils/trackSource.ts) tells the kinds apart; folder rules and file counts leave list-only entries out.
   - Identity: `id` (UUID), `fileKey` (`<relativePath.toLowerCase()>::<fileSize>`), optional SHA-256 `contentHash`.
   - Metadata: `title`, `artist`, `album`, `genre`, `year`, `trackNumber`, `duration`, `format`, `fileSize`, `coverArtUrl`.
   - Sync & playback state: `isMissingOnDevice`, `youtubeVideoId`, `youtubeTitle`, `matchStatus` (`unmatched | matched | skipped`), `playCount`, `skipCount`, `lastPlayedAt`.
   - Google Drive linkage: `driveFileId`, `driveModifiedTime`, `drivePath`, `cachedOnDeviceAt`.
-- **`Playlist`**: Ordered `trackIds`, last-synced snapshot `syncedTrackIds`, optional `youtubePlaylistUrl`, `watchedFolderName`, and `SyncRule` (`autoAddNewFiles`, `removeMissingFiles`, `autoScanIntervalSec`, `folderFilter`).
+- **`Playlist`**: Ordered `trackIds`, last-synced snapshot `syncedTrackIds`, optional `youtubePlaylistUrl`, `watchedFolderName`, and `SyncRule` (`autoAddNewFiles`, `removeMissingFiles`, `folderFilter`). A new or imported playlist starts with `syncedTrackIds: []` and `lastSyncedAt: null`. Records saved before 2026-11-26 may still carry `syncRule.autoScanIntervalSec`; nothing reads it, because the watch interval is app-wide.
 - **`PlaylistDiff`**: Computed delta (`toAdd`, `toRemove`, `missingOnDevice`, `matchedCount`, `unmatchedCount`, `hasChanges`) produced by [`computePlaylistDiff`](../src/utils/syncEngine.ts).
 - **`SmartPlaylist`**: Rule-based dynamic playlist (`matchMode: 'all' | 'any'`, `rules`, `sortBy`, `sortDir`, `excludeMissing`).
 - **`SyncEvent`**: Audit log record for applied playlist syncs.
@@ -56,6 +56,7 @@ Managed in [`src/utils/storage.ts`](../src/utils/storage.ts) with three object s
 | `cratesync_replaygain_settings_v1` | [`src/utils/replayGain.ts`](../src/utils/replayGain.ts) | ReplayGain mode, target LUFS (`-14/-16/-18`), preamp, and clipping guard |
 | `cratesync_replaygain_cache_v1` | [`src/utils/replayGain.ts`](../src/utils/replayGain.ts) | Cached loudness measurements (up to 600 tracks) |
 | `cratesync_dashboard_smart_filters_v1` | [`src/utils/dashboardSmartFilters.ts`](../src/utils/dashboardSmartFilters.ts) | User-saved dashboard smart filter presets |
+| `cratesync_auto_watch_interval_v1` | [`src/utils/folderWatch.ts`](../src/utils/folderWatch.ts) | Seconds between timed checks of the watched folder (`0`, `30`, `120` or `300`), one value for the whole app |
 | `cratesync_drive_folder_scope_v1` | [`src/components/GoogleDriveTransferSection.tsx`](../src/components/GoogleDriveTransferSection.tsx) | Last selected Google Drive folder scope |
 
 > **Security note**: Google Drive OAuth access tokens in [`src/utils/googleAuth.ts`](../src/utils/googleAuth.ts) are stored **exclusively in memory** and are never written to `localStorage`, `sessionStorage`, or IndexedDB.
@@ -107,7 +108,12 @@ Managed by [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts), [`sr
 | `audioTransitions.ts` | Crossfade curve math, gapless album continuity detection, transition settings persistence |
 | `replayGain.ts` | Track/album LUFS loudness analysis, gain calculation, clipping prevention, loudness cache |
 | `smartShuffle.ts` | Weighted shuffle scoring based on YouTube match quality, metadata completeness, and audio fidelity |
-| `syncEngine.ts` | Directory walking, drag-and-drop entry traversal, playlist diff computation |
+| `syncEngine.ts` | Directory walking, drag-and-drop entry traversal, playlist diff computation, the folder-scope rule |
+| `folderWatch.ts` | The saved watch interval, the folder permission query, and the watcher status (`watching`, `paused`, `syncing`, `idle`) |
+| `trackSource.ts` | Tells device files from list-only entries |
+| `playlistImport.ts` | Plans what importing a playlist file adds: the playlist, new list-only entries, YouTube IDs for songs already owned |
+| `scanLogExport.ts` | Builds the Scan Logs JSON download |
+| `deviceCache.ts` | Counts cached songs with no Drive copy and words the Clear Device Cache dialog |
 | `storage.ts` | IndexedDB (`CrateSyncDB`) wrapper for library state, directory handles, and audio blobs |
 | `googleAuth.ts` | Firebase Google OAuth sign-in/out, in-memory Drive token management, Firebase ID tokens for the AI endpoints |
 | `googleDriveApi.ts` | Google Drive v3 client (folder scanning, multipart and resumable uploads, downloads, manifest I/O, retry/backoff) |

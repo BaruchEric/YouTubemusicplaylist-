@@ -1174,7 +1174,7 @@ export function MiniPlayer({
             <>
               <div className="text-[13px] font-medium text-[#D1D5DB] truncate">Ready to play</div>
               <div className="text-xs text-[#717786] font-mono tabular-nums truncate">
-                {totalLibraryCount} local track{totalLibraryCount === 1 ? '' : 's'} available
+                {totalLibraryCount} track{totalLibraryCount === 1 ? '' : 's'} in the library
               </div>
             </>
           )}

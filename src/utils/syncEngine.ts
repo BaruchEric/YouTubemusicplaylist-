@@ -1,5 +1,6 @@
 import type { LocalTrack, Playlist, PlaylistDiff, ScanErrorEntry } from '../types/music';
 import { isAudioFile } from './audioMetadata';
+import { isListOnlyTrack } from './trackSource';
 
 export interface ScannedFileEntry {
   file: File;
@@ -243,6 +244,17 @@ export async function extractDroppedEntries(
 }
 
 /**
+ * Whether a playlist's folder rule covers this entry. An empty filter covers every device file.
+ * An imported line has no file in any folder and a missing file is gone, so neither is covered.
+ */
+export function isInFolderScope(track: LocalTrack, folderFilter: string): boolean {
+  if (track.isMissingOnDevice || isListOnlyTrack(track)) return false;
+  const filter = folderFilter.trim().toLowerCase();
+  if (!filter) return true;
+  return track.folderName.toLowerCase() === filter || track.relativePath.toLowerCase().startsWith(filter);
+}
+
+/**
  * Computes the exact sync delta between a playlist's current tracklist,
  * its last synced snapshot, and the current state of local device storage.
  */
@@ -290,17 +302,12 @@ export function computePlaylistDiff(
     }
   }
 
-  // If autoAddNewFiles is enabled and a folderFilter matches device tracks not yet in playlist
+  // With autoAddNewFiles on, queue the device files the folder rule covers that the playlist lacks
   if (playlist.syncRule.autoAddNewFiles) {
-    const filter = playlist.syncRule.folderFilter.trim().toLowerCase();
     for (const track of trackMap.values()) {
-      if (track.isMissingOnDevice) continue;
       if (currentSet.has(track.id)) continue;
-      const matchesFolder =
-        !filter ||
-        track.relativePath.toLowerCase().startsWith(filter) ||
-        track.folderName.toLowerCase() === filter;
-      if (matchesFolder && !toAdd.some((t) => t.id === track.id)) {
+      if (!isInFolderScope(track, playlist.syncRule.folderFilter)) continue;
+      if (!toAdd.some((t) => t.id === track.id)) {
         toAdd.push(track);
       }
     }

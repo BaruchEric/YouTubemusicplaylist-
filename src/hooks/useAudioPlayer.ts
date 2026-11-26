@@ -970,7 +970,7 @@ export function useAudioPlayer(
             if (err instanceof DriveApiError && err.isAuthError) {
               clearDriveAccessToken();
               driveFetchError =
-                'Google Drive session expired. Reconnect Google Drive in Import & Export to cache & play this song.';
+                'Google Drive session expired. Reconnect Google Drive in Drive Sync & Transfer to cache & play this song.';
             } else {
               driveFetchError =
                 err instanceof Error
@@ -986,7 +986,7 @@ export function useAudioPlayer(
           }
         } else {
           driveFetchError =
-            'Song is stored in Google Drive. Connect Google Drive in Import & Export to cache it to this device for playback.';
+            'Song is stored in Google Drive. Connect Google Drive in Drive Sync & Transfer to cache it to this device for playback.';
         }
       }
 

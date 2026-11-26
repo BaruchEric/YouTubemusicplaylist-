@@ -500,7 +500,16 @@ export function parseImportedText(
   return { suggestedName: baseName, tracks };
 }
 
-export function triggerFileDownload(content: string, fileName: string, mimeType: string): void {
+/** A file the browser saves for the user. */
+export interface FileDownload {
+  fileName: string;
+  content: string;
+  mimeType: string;
+}
+
+// Takes one object: with three strings in a row, a swapped file name and content still compiled,
+// and the Scan Logs export shipped that way.
+export function triggerFileDownload({ fileName, content, mimeType }: FileDownload): void {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

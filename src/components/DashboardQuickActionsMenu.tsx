@@ -435,11 +435,11 @@ export function DashboardQuickActionsMenu({
         icon: 'export',
         onTrigger: () => {
           if (!hasTracks) return;
-          triggerFileDownload(
-            exportCatalogToCSV(tracks),
-            'cratesync-library.csv',
-            'text/csv;charset=utf-8'
-          );
+          triggerFileDownload({
+            content: exportCatalogToCSV(tracks),
+            fileName: 'cratesync-library.csv',
+            mimeType: 'text/csv;charset=utf-8',
+          });
         },
       },
       {

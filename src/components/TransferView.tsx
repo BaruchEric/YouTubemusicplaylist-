@@ -326,11 +326,11 @@ export function TransferView({
                         <button
                           type="button"
                           onClick={() =>
-                            triggerFileDownload(
-                              exportPlaylistToCSV(exportPlaylist, exportTracks),
-                              `${safeFileBase(exportPlaylist.name)}.csv`,
-                              'text/csv;charset=utf-8'
-                            )
+                            triggerFileDownload({
+                              content: exportPlaylistToCSV(exportPlaylist, exportTracks),
+                              fileName: `${safeFileBase(exportPlaylist.name)}.csv`,
+                              mimeType: 'text/csv;charset=utf-8',
+                            })
                           }
                           className="inline-flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-md text-xs font-medium text-white bg-[#1B1F28] border border-white/[0.09] hover:bg-[#232834] transition-colors whitespace-nowrap"
                         >
@@ -341,11 +341,11 @@ export function TransferView({
                         <button
                           type="button"
                           onClick={() =>
-                            triggerFileDownload(
-                              exportPlaylistToM3U8(exportPlaylist, exportTracks),
-                              `${safeFileBase(exportPlaylist.name)}.m3u8`,
-                              'audio/x-mpegurl;charset=utf-8'
-                            )
+                            triggerFileDownload({
+                              content: exportPlaylistToM3U8(exportPlaylist, exportTracks),
+                              fileName: `${safeFileBase(exportPlaylist.name)}.m3u8`,
+                              mimeType: 'audio/x-mpegurl;charset=utf-8',
+                            })
                           }
                           className="inline-flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-md text-xs font-medium text-white bg-[#1B1F28] border border-white/[0.09] hover:bg-[#232834] transition-colors whitespace-nowrap"
                         >
@@ -356,11 +356,11 @@ export function TransferView({
                         <button
                           type="button"
                           onClick={() =>
-                            triggerFileDownload(
-                              exportPlaylistToJSON(exportPlaylist, exportTracks),
-                              `${safeFileBase(exportPlaylist.name)}.json`,
-                              'application/json;charset=utf-8'
-                            )
+                            triggerFileDownload({
+                              content: exportPlaylistToJSON(exportPlaylist, exportTracks),
+                              fileName: `${safeFileBase(exportPlaylist.name)}.json`,
+                              mimeType: 'application/json;charset=utf-8',
+                            })
                           }
                           className="inline-flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-md text-xs font-medium text-white bg-[#1B1F28] border border-white/[0.09] hover:bg-[#232834] transition-colors whitespace-nowrap"
                         >

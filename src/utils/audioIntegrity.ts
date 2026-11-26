@@ -1,4 +1,5 @@
 import type { LocalTrack } from '../types/music';
+import { LIST_ONLY_FORMATS } from './trackSource';
 
 export type IntegrityIssueCode =
   | 'corrupt-header'
@@ -66,8 +67,6 @@ const DURATION_ISSUE_CODES = new Set<IntegrityIssueCode>([
   'implausible-duration',
   'duration-mismatch',
 ]);
-
-const NON_LOCAL_FORMATS = new Set(['YT', 'LIST']);
 
 const COMPRESSED_FORMATS = new Set(['MP3', 'M4A', 'M4B', 'M4P', 'MP4', 'AAC', 'OGG', 'OGA', 'OPUS', 'WMA', 'WEBM']);
 
@@ -277,7 +276,7 @@ function areFormatsCompatible(declaredFormat: string, detectedContainer: string)
 export function evaluateTrackMetadataIntegrity(track: LocalTrack): IntegrityIssue[] {
   const issues: IntegrityIssue[] = [];
   const fmt = (track.format || '').toUpperCase();
-  const isLocalAudio = !NON_LOCAL_FORMATS.has(fmt);
+  const isLocalAudio = !LIST_ONLY_FORMATS.has(fmt);
   // Duration is unknown by design for YouTube/list placeholders and for Drive songs whose
   // audio has not been cached yet (the stub is built from Drive file metadata only).
   const durationNotReadYet =
@@ -468,7 +467,7 @@ export async function inspectAudioBlobIntegrity(
     if (
       detectedContainer &&
       !binaryCheck.isHtmlOrTextPayload &&
-      !NON_LOCAL_FORMATS.has(declaredFmt) &&
+      !LIST_ONLY_FORMATS.has(declaredFmt) &&
       declaredFmt !== 'AUDIO' &&
       !areFormatsCompatible(declaredFmt, detectedContainer)
     ) {

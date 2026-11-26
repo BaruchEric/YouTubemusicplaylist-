@@ -24,6 +24,7 @@ import type {
   SyncRule,
   TrackPlayStats,
 } from '../types/music';
+import { parseWatchInterval, type WatchIntervalSec } from '../utils/folderWatch';
 import { getSmartShuffleSummary } from '../utils/smartShuffle';
 import {
   buildInstantQueueBatches,
@@ -47,10 +48,13 @@ interface PlaylistViewProps {
   diff: PlaylistDiff;
   playStats: Record<string, TrackPlayStats>;
   availableFolders: string[];
+  /** The app-wide folder watch interval. Playlists do not have their own. */
+  autoWatchIntervalSec: WatchIntervalSec;
   activePlayingTrackId: string | null;
   isAudioPlaying: boolean;
   shuffleMode: ShuffleMode;
   hasPlayableFile: (fileKey: string) => boolean;
+  onChangeAutoWatch: (sec: WatchIntervalSec) => void;
   onUpdatePlaylist: (playlistId: string, updates: Partial<Playlist>) => void;
   onUpdateSyncRule: (playlistId: string, rule: SyncRule) => void;
   onReorderTrack: (playlistId: string, fromIdx: number, toIdx: number) => void;
@@ -70,10 +74,12 @@ export function PlaylistView({
   diff,
   playStats,
   availableFolders,
+  autoWatchIntervalSec,
   activePlayingTrackId,
   isAudioPlaying,
   shuffleMode,
   hasPlayableFile,
+  onChangeAutoWatch,
   onUpdatePlaylist,
   onUpdateSyncRule,
   onReorderTrack,
@@ -143,13 +149,21 @@ export function PlaylistView({
   const handleDownloadCSV = () => {
     const csv = exportPlaylistToCSV(playlist, tracks);
     const safeName = playlist.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'playlist';
-    triggerFileDownload(csv, `${safeName}-youtube-music.csv`, 'text/csv;charset=utf-8');
+    triggerFileDownload({
+      content: csv,
+      fileName: `${safeName}-youtube-music.csv`,
+      mimeType: 'text/csv;charset=utf-8',
+    });
   };
 
   const handleDownloadM3U = () => {
     const m3u = exportPlaylistToM3U8(playlist, tracks);
     const safeName = playlist.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'playlist';
-    triggerFileDownload(m3u, `${safeName}.m3u8`, 'audio/x-mpegurl;charset=utf-8');
+    triggerFileDownload({
+      content: m3u,
+      fileName: `${safeName}.m3u8`,
+      mimeType: 'audio/x-mpegurl;charset=utf-8',
+    });
   };
 
   return (
@@ -486,17 +500,12 @@ export function PlaylistView({
 
             <div className="space-y-2">
               <label htmlFor="rule-scan-interval" className="block text-[#9CA3AF] font-medium">
-                Folder Auto-Watch Cadence
+                Folder watch interval
               </label>
               <select
                 id="rule-scan-interval"
-                value={playlist.syncRule.autoScanIntervalSec}
-                onChange={(e) =>
-                  onUpdateSyncRule(playlist.id, {
-                    ...playlist.syncRule,
-                    autoScanIntervalSec: Number(e.target.value) as 0 | 30 | 120 | 300,
-                  })
-                }
+                value={autoWatchIntervalSec}
+                onChange={(e) => onChangeAutoWatch(parseWatchInterval(e.target.value))}
                 className="w-full px-3 py-2 rounded-md bg-[#0B0C0E] border border-white/[0.1] font-mono text-white focus:border-[#FF1F3D] focus:outline-none"
               >
                 <option value={0}>Manual scan only</option>
@@ -504,6 +513,9 @@ export function PlaylistView({
                 <option value={120}>Every 2 minutes</option>
                 <option value={300}>Every 5 minutes</option>
               </select>
+              <p className="text-[#717786] leading-relaxed">
+                One setting for the whole app. Every playlist follows the same watched folder.
+              </p>
             </div>
           </div>
         )}

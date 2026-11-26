@@ -429,23 +429,23 @@ export function ScannerView({
     if (exportTargetTracks.length === 0) return;
     const scopeSlug = selectedArray.length > 0 ? 'selected' : 'library';
     if (format === 'csv') {
-      triggerFileDownload(
-        exportCatalogToCSV(exportTargetTracks),
-        `cratesync-${scopeSlug}.csv`,
-        'text/csv;charset=utf-8'
-      );
+      triggerFileDownload({
+        content: exportCatalogToCSV(exportTargetTracks),
+        fileName: `cratesync-${scopeSlug}.csv`,
+        mimeType: 'text/csv;charset=utf-8',
+      });
     } else if (format === 'm3u8') {
-      triggerFileDownload(
-        exportCatalogToM3U8(exportTargetTracks, watchedFolder?.name || 'Device Storage Catalog'),
-        `cratesync-${scopeSlug}.m3u8`,
-        'audio/x-mpegurl;charset=utf-8'
-      );
+      triggerFileDownload({
+        content: exportCatalogToM3U8(exportTargetTracks, watchedFolder?.name || 'Device Storage Catalog'),
+        fileName: `cratesync-${scopeSlug}.m3u8`,
+        mimeType: 'audio/x-mpegurl;charset=utf-8',
+      });
     } else {
-      triggerFileDownload(
-        exportCatalogToJSON(exportTargetTracks),
-        `cratesync-${scopeSlug}.json`,
-        'application/json;charset=utf-8'
-      );
+      triggerFileDownload({
+        content: exportCatalogToJSON(exportTargetTracks),
+        fileName: `cratesync-${scopeSlug}.json`,
+        mimeType: 'application/json;charset=utf-8',
+      });
     }
     setExportMenuOpen(false);
   };

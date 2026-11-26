@@ -110,7 +110,11 @@ export function LibraryCleanupPanel({
     ]);
     const csv = [header.join(','), ...rows.map((r) => r.join(','))].join('\n');
     const dateStamp = new Date().toISOString().slice(0, 10);
-    triggerFileDownload(csv, `cratesync-missing-files-${dateStamp}.csv`, 'text/csv;charset=utf-8');
+    triggerFileDownload({
+      content: csv,
+      fileName: `cratesync-missing-files-${dateStamp}.csv`,
+      mimeType: 'text/csv;charset=utf-8',
+    });
   };
 
   return (
