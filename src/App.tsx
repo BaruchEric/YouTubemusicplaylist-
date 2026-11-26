@@ -24,6 +24,7 @@ import { SmartPlaylistView } from './components/SmartPlaylistView';
 import { SmartSearchModal } from './components/SmartSearchModal';
 import { SyncQueueView } from './components/SyncQueueView';
 import { ToastContainer } from './components/ToastContainer';
+import { YouTubePushDialog, type YouTubePushDialogState } from './components/YouTubePushDialog';
 import { TopBar } from './components/TopBar';
 import { TrackMatchDrawer } from './components/TrackMatchDrawer';
 import { TransferView } from './components/TransferView';
@@ -113,6 +114,18 @@ import {
   translateRelativePathForDevice,
 } from './utils/folderMappings';
 import type { ImportedTrackSeed } from './utils/youtubeLinks';
+import {
+  clearYouTubeAccessToken,
+  connectYouTube,
+  describeYouTubeConnectError,
+  getYouTubeAccessToken,
+} from './utils/googleAuth';
+import { createYouTubeApi } from './utils/youtubeApi';
+import {
+  estimateYouTubePush,
+  playlistAfterPush,
+  pushPlaylistToYouTube,
+} from './utils/youtubePush';
 
 type PendingConfirm =
   | { kind: 'delete-playlist'; playlistId: string; name: string }
@@ -232,6 +245,12 @@ export default function App() {
     contextLabel: string;
   }>({ open: false, trackIds: [], contextLabel: '' });
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
+  /** The open "Push to YouTube" dialog and the playlist it is about. */
+  const [youtubePush, setYouTubePush] = useState<{
+    playlistId: string;
+    state: YouTubePushDialogState;
+  } | null>(null);
+  const youtubePushAbortRef = useRef<AbortController | null>(null);
 
   // Live in-memory references (audio Blobs for playback + FileSystemDirectoryHandle for auto-watch)
   const fileMapRef = useRef<Map<string, Blob>>(new Map());
@@ -1643,6 +1662,78 @@ export default function App() {
     setSyncHistory((prev) => [event, ...prev].slice(0, 50));
   };
 
+  const handleOpenYouTubePush = (playlistId: string) => {
+    setYouTubePush({ playlistId, state: { phase: 'review', connectError: null } });
+  };
+
+  /**
+   * Runs from the dialog's button. connectYouTube has to be called before the first await,
+   * or the browser no longer ties Google's popup to the click and blocks it.
+   */
+  const handleStartYouTubePush = async () => {
+    if (!youtubePush || youtubePush.state.phase !== 'review') return;
+    const playlistId = youtubePush.playlistId;
+    const playlist = playlists.find((p) => p.id === playlistId);
+    if (!playlist) return;
+    const playlistTracks = playlist.trackIds
+      .map((id) => trackMap.get(id))
+      .filter((t): t is LocalTrack => Boolean(t));
+
+    setYouTubePush({ playlistId, state: { phase: 'working', progress: null } });
+
+    let accessToken: string;
+    try {
+      accessToken = getYouTubeAccessToken() ?? (await connectYouTube());
+    } catch (err) {
+      setYouTubePush({
+        playlistId,
+        state: { phase: 'review', connectError: describeYouTubeConnectError(err) },
+      });
+      return;
+    }
+
+    const controller = new AbortController();
+    youtubePushAbortRef.current = controller;
+    const now = Date.now();
+    const outcome = await pushPlaylistToYouTube({
+      api: createYouTubeApi(accessToken),
+      playlist,
+      tracks: playlistTracks,
+      now,
+      signal: controller.signal,
+      onProgress: (progress) =>
+        setYouTubePush((current) =>
+          current && current.playlistId === playlistId && current.state.phase === 'working'
+            ? { playlistId, state: { phase: 'working', progress } }
+            : current
+        ),
+    });
+    youtubePushAbortRef.current = null;
+
+    if (outcome.stopped?.failure === 'auth') clearYouTubeAccessToken();
+
+    setPlaylists((prev) =>
+      prev.map((pl) => (pl.id === playlistId ? playlistAfterPush(pl, outcome, now) : pl))
+    );
+
+    if (outcome.inserted.length + outcome.removed.length > 0) {
+      const event: SyncEvent = {
+        id: crypto.randomUUID(),
+        playlistId,
+        playlistName: playlist.name,
+        timestamp: now,
+        addedCount: outcome.inserted.length,
+        removedCount: outcome.removed.length,
+        matchedCount: playlistTracks.filter((t) => Boolean(t.youtubeVideoId)).length,
+        totalTracks: playlistTracks.length,
+        summary: `Pushed to YouTube (+${outcome.inserted.length}, -${outcome.removed.length})`,
+      };
+      setSyncHistory((prev) => [event, ...prev].slice(0, 50));
+    }
+
+    setYouTubePush({ playlistId, state: { phase: 'done', outcome } });
+  };
+
   const handleRequestApplySync = (playlistId: string) => {
     const playlist = playlists.find((p) => p.id === playlistId);
     const diff = diffMap.get(playlistId);
@@ -1858,6 +1949,9 @@ export default function App() {
                 ...existing,
                 trackIds: mergedTrackIds,
                 youtubePlaylistUrl: existing.youtubePlaylistUrl || incomingPl.youtubePlaylistUrl,
+                // The record names the YouTube playlist it is about, so one that does not
+                // match the link kept above is ignored.
+                youtubePush: existing.youtubePush ?? incomingPl.youtubePush,
                 updatedAt: now,
               };
             }
@@ -2669,6 +2763,10 @@ export default function App() {
     [playlists, activePlaylistId]
   );
 
+  const youtubePushPlaylist = youtubePush
+    ? (playlists.find((p) => p.id === youtubePush.playlistId) ?? null)
+    : null;
+
   const activePlaylistTracks = useMemo(() => {
     if (!activePlaylist) return [];
     return activePlaylist.trackIds
@@ -3031,6 +3129,7 @@ export default function App() {
               })
             }
             onApplySync={handleRequestApplySync}
+            onPushToYouTube={handleOpenYouTubePush}
             onInspectTrack={setInspectedTrackId}
             onOpenBatchTagEditor={(trackIds, contextLabel) =>
               setBatchTagModal({ open: true, trackIds, contextLabel })
@@ -3274,6 +3373,23 @@ export default function App() {
       />
 
       {/* Confirmation Modal for Destructive Operations */}
+      {youtubePush && youtubePushPlaylist && (
+        <YouTubePushDialog
+          playlistName={youtubePushPlaylist.name}
+          estimate={estimateYouTubePush(
+            youtubePushPlaylist,
+            youtubePushPlaylist.trackIds
+              .map((id) => trackMap.get(id))
+              .filter((t): t is LocalTrack => Boolean(t))
+          )}
+          state={youtubePush.state}
+          isConnected={getYouTubeAccessToken() !== null}
+          onStart={handleStartYouTubePush}
+          onStop={() => youtubePushAbortRef.current?.abort()}
+          onClose={() => setYouTubePush(null)}
+        />
+      )}
+
       <ConfirmModal
         isOpen={Boolean(pendingConfirm)}
         title={

@@ -15,6 +15,7 @@ import {
   SlidersHorizontal,
   Tags,
   Trash2,
+  Upload,
 } from 'lucide-react';
 import type { ShuffleMode } from '../hooks/useAudioPlayer';
 import type {
@@ -61,6 +62,8 @@ interface PlaylistViewProps {
   onRemoveTrackFromPlaylist: (playlistId: string, trackId: string) => void;
   onRequestDeletePlaylist: (playlistId: string) => void;
   onApplySync: (playlistId: string) => void;
+  /** Opens the review of what a push to YouTube will send. */
+  onPushToYouTube: (playlistId: string) => void;
   onInspectTrack: (trackId: string) => void;
   onOpenBatchTagEditor: (trackIds: string[], contextLabel: string) => void;
   onPlayTrack: (trackId: string, queueIds: string[]) => void;
@@ -86,6 +89,7 @@ export function PlaylistView({
   onRemoveTrackFromPlaylist,
   onRequestDeletePlaylist,
   onApplySync,
+  onPushToYouTube,
   onInspectTrack,
   onOpenBatchTagEditor,
   onPlayTrack,
@@ -334,6 +338,20 @@ export function PlaylistView({
               <ExternalLink className="h-3.5 w-3.5" />
               <span>{ytMusicTarget.label}</span>
             </a>
+
+            <button
+              type="button"
+              onClick={() => onPushToYouTube(playlist.id)}
+              title={
+                linkedPlaylistId
+                  ? 'Send the songs this playlist gained, and take out the ones it lost, on the linked YouTube playlist'
+                  : 'Create this playlist on your YouTube account and add its matched songs'
+              }
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md text-xs font-medium text-white bg-[#161920] border border-[#FF1F3D]/45 hover:bg-[#FF1F3D]/15 transition-colors whitespace-nowrap"
+            >
+              <Upload className="h-3.5 w-3.5 text-[#FF4D64]" />
+              <span>Push to YouTube</span>
+            </button>
 
             {diff.hasChanges && (
               <button

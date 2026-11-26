@@ -26,7 +26,7 @@ All primary domain interfaces are defined in [`src/types/music.ts`](../src/types
   - Metadata: `title`, `artist`, `album`, `genre`, `year`, `trackNumber`, `duration`, `format`, `fileSize`, `coverArtUrl`.
   - Sync & playback state: `isMissingOnDevice`, `youtubeVideoId`, `youtubeTitle`, `matchStatus` (`unmatched | matched | skipped`), `playCount`, `skipCount`, `lastPlayedAt`.
   - Google Drive linkage: `driveFileId`, `driveModifiedTime`, `drivePath`, `cachedOnDeviceAt`.
-- **`Playlist`**: Ordered `trackIds`, last-synced snapshot `syncedTrackIds`, optional `youtubePlaylistUrl`, `watchedFolderName`, and `SyncRule` (`autoAddNewFiles`, `removeMissingFiles`, `folderFilter`). A new or imported playlist starts with `syncedTrackIds: []` and `lastSyncedAt: null`. Records saved before 2026-11-26 may still carry `syncRule.autoScanIntervalSec`; nothing reads it, because the watch interval is app-wide.
+- **`Playlist`**: Ordered `trackIds`, last-synced snapshot `syncedTrackIds`, `youtubePlaylistUrl` (a link the user pasted, or the playlist the first push created), optional `youtubePush` (`YouTubePushRecord`: the YouTube playlist id, the video ids CrateSync itself added to it, and when), `watchedFolderName`, and `SyncRule` (`autoAddNewFiles`, `removeMissingFiles`, `folderFilter`). A new or imported playlist starts with `syncedTrackIds: []` and `lastSyncedAt: null`. Records saved before 2026-11-26 may still carry `syncRule.autoScanIntervalSec`; nothing reads it, because the watch interval is app-wide.
 - **`PlaylistDiff`**: Computed delta (`toAdd`, `toRemove`, `missingOnDevice`, `matchedCount`, `unmatchedCount`, `hasChanges`) produced by [`computePlaylistDiff`](../src/utils/syncEngine.ts).
 - **`SmartPlaylist`**: Rule-based dynamic playlist (`matchMode: 'all' | 'any'`, `rules`, `sortBy`, `sortDir`, `excludeMissing`).
 - **`SyncEvent`**: Audit log record for applied playlist syncs.
@@ -85,6 +85,19 @@ Implemented across [`src/utils/googleAuth.ts`](../src/utils/googleAuth.ts), [`sr
    - **Pull** in merge mode applies the same rules with `newestWins`, `newerTrackEdits` and `dropTombstoned`. Mirror mode takes Drive's copy as it is, and so does a restore from a backup file. Both mark whatever they bring back as changed (`reviveTombstoned`), so an earlier deletion does not remove it again.
    - Each uploaded file's Drive link is saved as soon as that upload finishes. A push that fails part way does not upload the same songs again.
 
+## Pushing a playlist to YouTube
+
+[`src/utils/youtubePush.ts`](../src/utils/youtubePush.ts) decides what to send and [`src/utils/youtubeApi.ts`](../src/utils/youtubeApi.ts) makes the four YouTube Data API v3 calls. The dialog is [`src/components/YouTubePushDialog.tsx`](../src/components/YouTubePushDialog.tsx), opened from the playlist's Push to YouTube button.
+
+1. **Review.** `estimateYouTubePush` works out, from this device alone, how many songs go and how many come off, so the dialog can show it before anybody signs in.
+2. **Connect.** `connectYouTube` in `googleAuth.ts` opens Google's popup for the scope `https://www.googleapis.com/auth/youtube` only. A signed-in user goes through `reauthenticateWithPopup`, which refuses a different Google account. The access token lives in memory and is dropped after 50 minutes.
+3. **Read or create.** A playlist with a link is read with `playlistItems.list`. One without is created private with `playlists.insert`, and its link is saved on the playlist.
+4. **Diff.** `planYouTubePush` adds the matched videos YouTube lacks, in playlist order. It removes an entry only when its video is in `youtubePush.videoIds` and the playlist no longer holds it. Entries CrateSync did not add are counted as left alone.
+5. **Write.** Inserts, then deletes, one at a time. A busy reply (409, a rate limit, a 5xx) gets one more try after two seconds. A video YouTube no longer has is skipped. Anything else stops the push: the daily quota, an expired token, a playlist owned by another account.
+6. **Record.** `playlistAfterPush` stores the new `youtubePush` and stamps `updatedAt`, also after a push that stopped part way, so the next push sends only what is still missing.
+
+Quota is 10,000 units a day for the Google Cloud project. A list page costs 1 and every write costs 50. The push never reorders songs, since each move would cost another 50.
+
 ## Audio Playback Pipeline
 
 Managed by [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts), [`src/utils/audioTransitions.ts`](../src/utils/audioTransitions.ts), [`src/utils/replayGain.ts`](../src/utils/replayGain.ts), and [`src/utils/smartShuffle.ts`](../src/utils/smartShuffle.ts):
@@ -122,11 +135,13 @@ Managed by [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts), [`sr
 | `scanLogExport.ts` | Builds the Scan Logs JSON download |
 | `deviceCache.ts` | Counts cached songs with no Drive copy and words the Clear Device Cache dialog |
 | `storage.ts` | IndexedDB (`CrateSyncDB`) wrapper for library state, directory handles, and audio blobs |
-| `googleAuth.ts` | Firebase Google OAuth sign-in/out, in-memory Drive token management, Firebase ID tokens for the AI endpoints |
+| `googleAuth.ts` | Firebase Google OAuth sign-in/out, in-memory Drive token management, the separate in-memory YouTube token (`connectYouTube`), Firebase ID tokens for the AI endpoints |
 | `googleDriveApi.ts` | Google Drive v3 client (folder scanning, multipart and resumable uploads, downloads, manifest I/O, retry/backoff) |
 | `folderMappings.ts` | Device profiles, cross-platform path normalization, Drive-to-local binding resolution, merging & tombstones |
 | `libraryMerge.ts` | Joins two devices' songs and playlists for a push or a pull: newest edit wins, deletions as tombstones, edit stamps |
 | `youtubeLinks.ts` | YouTube ID/playlist URL extraction, queue batch builders, M3U8/CSV/JSON/TXT import & export |
+| `youtubeApi.ts` | YouTube Data API v3 client for a push: create a playlist, list its entries, add one, remove one, and sort failures by what to do about them |
+| `youtubePush.ts` | Plans and runs a push to YouTube: the estimate shown before sign-in, the diff, the write loop, and the record stored on the playlist |
 | `smartPlaylists.ts` | Smart Playlist rule definitions, field metadata, and evaluation/sorting engine |
 | `smartSearch.ts` | Global search tokenizer, query operator parser, and scored track/album/genre/playlist matching |
 | `dashboardSmartFilters.ts` | Dashboard quick criteria, custom rule evaluation, and saved filter storage |
@@ -141,5 +156,5 @@ Managed by [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts), [`sr
 - **Core Workspace Views**: `DashboardView`, `ScannerView`, `PlaylistView`, `SmartPlaylistView`, `SyncQueueView`, `TransferView`
 - **Navigation & Chrome**: `Sidebar`, `TopBar`, `MiniPlayer`, `ToastContainer`, `DashboardJumpMenu`, `DashboardQuickActionsMenu`
 - **Google Drive & Folder UI**: `GoogleDriveTransferSection`, `FolderMappingsPanel`, `DriveFolderBrowserModal`, `LocalFolderBrowserModal`
-- **Library Maintenance & Editing**: `TrackMatchDrawer`, `BatchTagEditorModal`, `DuplicateFinderPanel`, `AudioIntegrityPanel`, `LibraryCleanupPanel`, `Modals`, `SmartPlaylistModal`, `SmartSearchModal`
+- **Library Maintenance & Editing**: `TrackMatchDrawer`, `BatchTagEditorModal`, `DuplicateFinderPanel`, `AudioIntegrityPanel`, `LibraryCleanupPanel`, `Modals`, `YouTubePushDialog`, `SmartPlaylistModal`, `SmartSearchModal`
 - **Analytics & Discovery**: `GenreDistributionChart`, `GlobalGenreDistributionChart`, `SmartPlaylistGenreBreakdown`, `DailyListeningChart`, `WeeklyListeningHabitsChart`, `WeeklyTracksAddedChart`, `ListeningActivityHeatmap`, `ListeningActivitySection`, `TrackStatisticsPanel`, `AlbumArtGallery`, `RecommendedForYou`, `DashboardSmartFilter`

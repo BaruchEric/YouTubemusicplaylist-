@@ -97,6 +97,11 @@ export function buildTrackYouTubeMusicUrl(
   return buildYouTubeMusicSearchUrl(track);
 }
 
+/** The YouTube Music page of a playlist. */
+export function buildYouTubeMusicPlaylistUrl(playlistId: string): string {
+  return `https://music.youtube.com/playlist?list=${encodeURIComponent(playlistId)}`;
+}
+
 /**
  * Always returns a working YouTube Music / YouTube queue URL for a playlist.
  */
@@ -107,7 +112,7 @@ export function buildPlaylistYouTubeMusicUrl(
   const linkedId = extractYouTubePlaylistId(playlist.youtubePlaylistUrl);
   if (linkedId) {
     return {
-      url: `https://music.youtube.com/playlist?list=${encodeURIComponent(linkedId)}`,
+      url: buildYouTubeMusicPlaylistUrl(linkedId),
       label: 'Open in YouTube Music',
       isDirectQueue: true,
     };

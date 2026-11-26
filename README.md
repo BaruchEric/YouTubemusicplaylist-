@@ -1,6 +1,8 @@
 # CrateSync
 
-**CrateSync** is a local-first audio library manager, YouTube Music playlist synchronization studio, and multi-device Google Drive sync hub. Scan local device audio folders, extract embedded metadata and album artwork, match tracks to YouTube Music, organize libraries with Smart Playlists and analytics, and keep tracks, playlists, and folder mappings synchronized across devices via Google Drive.
+**CrateSync** is a local-first audio library manager that sends your playlists to YouTube Music and keeps the library in step across devices through Google Drive. Scan local device audio folders, extract embedded metadata and album artwork, match tracks to YouTube Music, push each playlist to your YouTube account, organize libraries with Smart Playlists and analytics, and keep tracks, playlists, and folder mappings synchronized across devices via Google Drive.
+
+It runs at https://music.beric.ca ([`docs/DEPLOY.md`](docs/DEPLOY.md)).
 
 ## Features
 
@@ -14,8 +16,12 @@
 
 ### YouTube Music Matching & Playlist Sync
 - **Track Matching**: Link local tracks to 11-character YouTube / YouTube Music video IDs via URL or ID paste, with pre-filled YouTube Music search links for unmatched tracks.
-- **Sync Queue & Diff Engine**: Configure per-playlist sync rules (`autoAddNewFiles`, `removeMissingFiles`, `folderFilter`), inspect exact add/remove/missing deltas, apply sync snapshots, and track sync history.
-- **Import & Export**: Launch instant YouTube Music queues or export/import playlists in **M3U8**, **CSV**, **JSON**, and **Plain Text** formats.
+- **Push to YouTube**: The button on a playlist creates a private playlist on your YouTube account, which YouTube Music shows too, and adds every matched song. Later pushes send only the difference: new songs go to the end, and a song comes off YouTube only when an earlier push put it there and it has since left the playlist. Songs you added on YouTube yourself stay. Paste a playlist link under Edit details to send to a playlist you already have. The first push opens Google's window and asks for the YouTube scope (`https://www.googleapis.com/auth/youtube`). The token stays in memory and lasts under an hour.
+  - YouTube gives the app's Google Cloud project 10,000 quota units a day, and adding or removing a song costs 50, so a day holds about 200 changes. A bigger push stops at the limit and the next push carries on from there.
+  - The order of songs already on YouTube is not changed, and unmatched songs stay behind until you match them.
+  - On a second device, pull from Drive before the first push. Otherwise that device creates a second YouTube playlist for the same CrateSync playlist.
+- **Sync Queue & Diff Engine**: Configure per-playlist sync rules (`autoAddNewFiles`, `removeMissingFiles`, `folderFilter`), inspect exact add/remove/missing deltas, apply sync snapshots, and track sync history. Apply Sync updates CrateSync's own record of the folder. It sends nothing to YouTube. Push to YouTube does that.
+- **Import & Export**: Open a temporary YouTube Music queue of up to 50 matched songs without signing in, or export/import playlists in **M3U8**, **CSV**, **JSON**, and **Plain Text** formats. YouTube does not let you save that queue as a playlist in one step, which is what Push to YouTube is for.
 
 ### Multi-Device Google Drive Sync
 - **Google Drive as Source of Truth**: Sign in with Google via Firebase Auth using least-privilege Drive OAuth scopes (`drive.readonly` and `drive.file`, with access tokens held strictly in memory).
@@ -81,6 +87,8 @@ cp .env.example .env
 | `DISABLE_HMR` | Optional | Set to `true` to disable Vite HMR and file watching. |
 
 > **Google Drive OAuth**: Firebase and Google OAuth client configuration is loaded from [`firebase-applet-config.json`](firebase-applet-config.json). Google sign-in works only from an origin the Firebase project knows in three places: Auth's authorized domains (Authentication, Settings, Authorized domains), the HTTP referrers allowed on the browser API key in `apiKey`, and the domains of the reCAPTCHA Enterprise key in `recaptchaSiteKey`, which Firebase App Check uses. App Check is enforced for Authentication, so an origin missing from the reCAPTCHA key cannot sign in. The key allows `localhost` on ports 3000 to 3002 and the AI Studio preview hosts, so a local server works at `http://localhost:3000`. The same three places also list `music.beric.ca`, where the app is deployed ([`docs/DEPLOY.md`](docs/DEPLOY.md)). To serve from anywhere else, add the origin in all three places.
+>
+> **Push to YouTube** needs one more thing on that Google Cloud project: the YouTube Data API v3 (`youtube.googleapis.com`) switched on. It has been on since 2026-11-26. The calls carry the user's OAuth token, so the browser API key's restrictions do not apply to them.
 
 ### Running the App
 
@@ -107,7 +115,7 @@ npm start
 | `start` | `NODE_ENV=production node server.ts` | Runs the production server, serving `dist/` (run `build` first) |
 | `preview` | `vite preview` | Previews the static Vite production build |
 | `lint` | `tsc --noEmit` | Runs strict TypeScript type-checking |
-| `test` | `bun test` | Runs the unit tests in `tests/` (AI endpoint sign-in check, folder mapping merges, the two-device library merge, Drive uploads, playlist diffs and imports, the folder watcher, exports) |
+| `test` | `bun test` | Runs the unit tests in `tests/` (AI endpoint sign-in check, folder mapping merges, the two-device library merge, Drive uploads, the YouTube push and its API client, playlist diffs and imports, the folder watcher, exports) |
 | `deploy` | `deploy/deploy-mini.sh` | Deploys the committed tree to https://music.beric.ca. See [`docs/DEPLOY.md`](docs/DEPLOY.md) |
 | `clean` | `rm -rf dist server.js` | Removes build artifacts |
 

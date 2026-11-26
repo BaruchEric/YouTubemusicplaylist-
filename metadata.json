@@ -1,6 +1,6 @@
 {
   "name": "CrateSync",
-  "description": "Create YouTube Music playlists from local device storage audio folders, extract ID3 metadata, match tracks, and automatically sync playlist changes with your library.",
+  "description": "Build playlists from the audio folders on your device, read their tags, match songs to YouTube, and push each playlist to your YouTube Music account.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

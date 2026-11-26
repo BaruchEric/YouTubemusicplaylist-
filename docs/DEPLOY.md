@@ -38,6 +38,7 @@ These were set once, on 2026-11-26. A new hostname needs all of them again.
    - Authentication, Settings, Authorized domains: `music.beric.ca`
    - the browser API key's HTTP referrers: `https://music.beric.ca/*`
    - the reCAPTCHA Enterprise key that App Check uses: `music.beric.ca`
+5. **YouTube.** Push to YouTube needs the YouTube Data API v3 switched on for the same project: `gcloud services enable youtube.googleapis.com --project gen-lang-client-0484635733`. This is per project, not per hostname.
 
 ## Roll back
 

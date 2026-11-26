@@ -80,7 +80,7 @@ export function CreatePlaylistModal({
       <div className="w-full max-w-lg rounded-lg bg-[#14171D] border border-white/[0.1] overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.08]">
           <h2 id="create-playlist-title" className="font-display text-lg font-semibold text-white">
-            Create YouTube Music Playlist
+            New playlist
           </h2>
           <button
             type="button"
@@ -135,7 +135,7 @@ export function CreatePlaylistModal({
 
           <div className="space-y-1.5">
             <label htmlFor="pl-yt-url" className="block text-xs font-medium text-[#D1D5DB]">
-              Existing YouTube Music Playlist URL (optional)
+              YouTube playlist link (optional)
             </label>
             <input
               id="pl-yt-url"
@@ -145,6 +145,10 @@ export function CreatePlaylistModal({
               placeholder="https://music.youtube.com/playlist?list=..."
               className="w-full px-3.5 py-2.5 rounded-md bg-[#0D0F13] border border-white/[0.1] text-sm font-mono text-white placeholder-[#6B7280] focus:border-[#FF1F3D] focus:outline-none"
             />
+            <p className="text-xs text-[#8B92A2]">
+              Paste one to send this playlist to a YouTube playlist you already have. Leave it
+              empty and the first Push to YouTube creates the playlist for you.
+            </p>
           </div>
 
           <div className="pt-2 border-t border-white/[0.07] space-y-3.5">

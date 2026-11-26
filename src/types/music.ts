@@ -84,11 +84,27 @@ export interface Playlist {
   trackIds: string[];
   /** Snapshot of track IDs from the last completed sync */
   syncedTrackIds: string[];
-  /** Optional saved YouTube Music playlist URL linked by the user */
+  /**
+   * The YouTube playlist this one goes to: a link the user pasted, or the playlist CrateSync
+   * created on the first push. Empty until one of those happens.
+   */
   youtubePlaylistUrl: string;
+  /** What the last push left on YouTube. Absent until the playlist is pushed. */
+  youtubePush?: YouTubePushRecord;
   /** Optional watched folder name associated with this playlist */
   watchedFolderName: string | null;
   syncRule: SyncRule;
+}
+
+/**
+ * The videos CrateSync itself added to one YouTube playlist. A push removes a song from
+ * YouTube only when it is listed here, so songs added on YouTube by hand are never touched.
+ * The record counts only for the playlist it names: link a different one and it is ignored.
+ */
+export interface YouTubePushRecord {
+  playlistId: string;
+  videoIds: string[];
+  pushedAt: number;
 }
 
 export interface PlaylistDiff {
