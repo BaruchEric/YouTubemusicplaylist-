@@ -9,6 +9,7 @@ import type {
   SyncDeviceProfile,
   SyncEvent,
 } from '../types/music';
+import type { TagReadUpdates } from '../utils/driveTagReader';
 import type { CrateSyncLibraryBackupPayload, DriveFileItem } from '../utils/googleDriveApi';
 import type { ManifestFolderState } from '../utils/folderMappings';
 import type { LibraryPushMerge, LocalLibraryForPush } from '../utils/libraryMerge';
@@ -73,6 +74,8 @@ interface TransferViewProps {
     updates: Array<{ trackId: string; driveFileId: string; driveModifiedTime: string; drivePath: string }>
   ) => void;
   onCacheDriveTrackAudio: (trackId: string, blob: Blob, driveFile?: DriveFileItem) => Promise<void>;
+  /** Saves the fields a tag read changed, by track id. */
+  onApplyTrackTagUpdates: (updates: TagReadUpdates) => void;
   onEvictTrackCache: (fileKeys: string[]) => Promise<void>;
   onClearAllDeviceCache: () => Promise<void>;
   onPlayTrack: (trackId: string, queueIds?: string[]) => void;
@@ -113,6 +116,7 @@ export function TransferView({
   onSyncFromDriveSourceOfTruth,
   onLinkUploadedDriveTracks,
   onCacheDriveTrackAudio,
+  onApplyTrackTagUpdates,
   onEvictTrackCache,
   onClearAllDeviceCache,
   onPlayTrack,
@@ -223,6 +227,7 @@ export function TransferView({
           onSyncFromDriveSourceOfTruth={onSyncFromDriveSourceOfTruth}
           onLinkUploadedDriveTracks={onLinkUploadedDriveTracks}
           onCacheDriveTrackAudio={onCacheDriveTrackAudio}
+          onApplyTrackTagUpdates={onApplyTrackTagUpdates}
           onEvictTrackCache={onEvictTrackCache}
           onClearAllDeviceCache={onClearAllDeviceCache}
           onPlayTrack={onPlayTrack}

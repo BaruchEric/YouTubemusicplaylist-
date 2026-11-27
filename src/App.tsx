@@ -83,7 +83,15 @@ import {
   summarizeIntegrityIssues,
   type TrackIntegrityScanResult,
 } from './utils/audioIntegrity';
-import { computeAudioHash, extractLocalTrack, isAudioFile, isSha256Hash } from './utils/audioMetadata';
+import {
+  computeAudioHash,
+  extractLocalTrack,
+  isAudioFile,
+  isSha256Hash,
+  readTagsFromBlob,
+} from './utils/audioMetadata';
+import type { TagReadUpdates } from './utils/driveTagReader';
+import { applyFileTags } from './utils/fileTags';
 import {
   clearAllAudioBlobs,
   deleteAudioBlobs,
@@ -337,30 +345,24 @@ export default function App() {
           : {}),
       };
 
-      if (target.duration === 0 || target.artist === 'Unknown Artist' || !target.coverArtUrl) {
+      // A tag read can fill in everything but the hash, which needs the whole file. So this
+      // also parses a song with no SHA-256 yet, or it would never get one.
+      if (
+        target.duration === 0 ||
+        target.artist === 'Unknown Artist' ||
+        !target.coverArtUrl ||
+        !isSha256Hash(target.contentHash)
+      ) {
         try {
-          const virtualFile = new File([blob], target.fileName, {
-            type: blob.type || 'audio/mpeg',
-          });
-          const parsed = await extractLocalTrack(virtualFile, target.relativePath);
+          const [fileTags, contentHash] = await Promise.all([
+            readTagsFromBlob(blob, target.fileName),
+            computeAudioHash(blob),
+          ]);
           enriched = {
             ...enriched,
-            title:
-              target.title && target.title !== target.fileName.replace(/\.[^.]+$/, '')
-                ? target.title
-                : parsed.title,
-            artist: target.artist !== 'Unknown Artist' ? target.artist : parsed.artist,
-            album:
-              target.album !== 'Unknown Album' && target.album !== 'Google Drive Library'
-                ? target.album
-                : parsed.album,
-            genre: target.genre || parsed.genre,
-            year: target.year || parsed.year,
-            trackNumber: target.trackNumber ?? parsed.trackNumber,
-            duration: parsed.duration > 0 ? parsed.duration : target.duration,
-            coverArtUrl: target.coverArtUrl || parsed.coverArtUrl,
+            ...applyFileTags(target, fileTags),
             // Prefer the SHA-256 of the downloaded bytes; older Drive stubs stored Drive's MD5 here
-            contentHash: parsed.contentHash || target.contentHash,
+            contentHash: contentHash || target.contentHash,
           };
         } catch {
           // Keep existing Drive stub metadata if binary tag parsing fails
@@ -373,6 +375,20 @@ export default function App() {
       await refreshDeviceCacheStats();
     },
     [refreshDeviceCacheStats]
+  );
+
+  /** Saves what a tag read found in Drive songs. The reader calls this once for each batch. */
+  const handleApplyTrackTagUpdates = useCallback(
+    (updates: TagReadUpdates) => {
+      if (updates.size === 0) return;
+      setTracks((prev) =>
+        prev.map((track) => {
+          const changes = updates.get(track.id);
+          return changes ? { ...track, ...changes } : track;
+        })
+      );
+    },
+    [setTracks]
   );
 
   const hasCachedAudio = useCallback(
@@ -2422,6 +2438,8 @@ export default function App() {
               folderName: mappedLoc?.folderName ?? matched.folderName ?? incoming.folderName,
               relativePath: mappedLoc?.relativePath ?? matched.relativePath ?? incoming.relativePath,
               coverArtUrl: incoming.coverArtUrl || matched.coverArtUrl,
+              // A manifest written before this device read the file still says 0 for unknown.
+              duration: incoming.duration > 0 ? incoming.duration : matched.duration,
               cachedOnDeviceAt: isCachedHere ? matched.cachedOnDeviceAt ?? now : null,
               isMissingOnDevice: false,
               ...(payload.replaceWithSourceOfTruth
@@ -3251,6 +3269,7 @@ export default function App() {
               onSyncFromDriveSourceOfTruth={handleSyncFromDriveSourceOfTruth}
               onLinkUploadedDriveTracks={handleLinkUploadedDriveTracks}
               onCacheDriveTrackAudio={handleCacheDriveTrackAudio}
+              onApplyTrackTagUpdates={handleApplyTrackTagUpdates}
               onEvictTrackCache={handleEvictTrackCache}
               onClearAllDeviceCache={handleClearAllDeviceCache}
               onPlayTrack={audioPlayer.playTrack}
