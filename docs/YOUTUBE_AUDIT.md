@@ -2,7 +2,7 @@
 
 This is what Google was told about CrateSync on the [Audit and Quota Extension Form](https://support.google.com/youtube/contact/yt_api_form). The form's attestations include telling YouTube in writing before the use of the API changes, so a change to what CrateSync calls or keeps goes here and to Google first.
 
-Status on 26 November 2026: sections 1 to 6 are filled in with the texts and files below. The demo-account acknowledgment in section 4, the attestations in section 7 and the Submit button are the applicant's to tick and press. Put the date here once it is sent.
+Status: the applicant sent the form on 26 November 2026 with the texts and files below. Google has not answered yet. The form shows no copy of what was sent, so this page is the record.
 
 ## Answers
 
@@ -52,7 +52,9 @@ The legal name, the address and the contact email are on the form and stay out o
 
 > CrateSync has one user, me. My music library holds 2,568 songs and 37 are linked to a video so far. Finding the videos for the other 2,531 takes one search.list call per song at 100 units, 253,100 units in all. Sending the songs to YouTube takes one playlistItems.insert per song at 50 units, 128,400 units. Together the first sync costs 381,500 units. The default 10,000 units a day holds 100 searches or 200 inserts, so the first sync takes 39 days. With 40,000 units a day it takes 10 days, at no more than 400 searches or 800 writes on a day. After the first sync I expect fewer than 100 requests on most days, for new songs and for re-ordering a playlist. CrateSync keeps its own use down. A search run is capped at one day's quota and shows its cost before it starts. A song searched in the last 30 days is not searched again. Reading one of my playlists matches many songs for 1 unit per 50 videos. The 30-day refresh of stored video IDs costs 1 unit per 50 videos. A push counts its writes before it starts, and both a search and a push stop when YouTube reports that the quota is used up. CrateSync does not call videos.insert.
 
-The 37 songs were linked on 26 November 2026 by reading the liked-videos playlist, which costs 1 unit per 50 videos and no search. The 2,568 are the songs in Drive. A scan of the local music folder later that day added 5 files Drive lacks: two exact copies of songs, two stems and one long recording. The app therefore counts 2,573 tracks and 2,536 without a video, and the form keeps the 2,568 because none of the 5 is a song to look up.
+The 37 songs were linked on 26 November 2026 by reading the liked-videos playlist, which costs 1 unit per 50 videos and no search. The 2,568 are the songs in Drive. A scan of the local music folder later that day added 5 files Drive lacks: two exact copies of songs, two stems and one long recording. The form keeps the 2,568 because none of the 5 is a song to look up.
+
+After the form went out the same evening, the two exact copies were removed and a first search of 85 songs ran on the default quota, 8,500 units. It proposed 65 videos and 56 were applied after review. The app then counted 2,571 tracks, 93 with a video and 2,478 without.
 
 ## search.list justification, as sent
 
@@ -80,8 +82,8 @@ The screenshots and the recording show a signed-in account, so they are kept out
 
 ## Where the evidence falls short of what the form asks
 
-- The form asks for the browser address bar in web screenshots. The privacy page, the terms page, the home page and the two Match YouTube screens have it. The four Push to YouTube screens were taken from inside the page and have none.
-- There is no screenshot of Google's consent screen. Google's window opens outside the tab and closes by itself once access is given.
+- The form asks for the browser address bar in web screenshots. The privacy page, the terms page, the home page and the two Match YouTube screens have it. The four Push to YouTube screens Google received were taken from inside the page and have none. A new push after the form went out gave the same four screens as whole Chrome windows with the address bar. They and a rebuilt six-screen image sit in the evidence folder's `follow-up/`, ready if Google asks.
+- There is no screenshot of Google's consent screen. Google's window opens outside the tab and closes by itself once access is given. It did so again on that later push, with no click, because the app's Google sign-in was still live.
 - The recording ends on a still screenshot of the playlist on YouTube. It does not show the browser going there.
 
 ## If Google grants the quota
