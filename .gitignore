@@ -1,15 +1,24 @@
 .gradle/
+.kotlin/
 build/
 **/build/
 local.properties
 .idea/
 *.iml
 .DS_Store
-.env
-.env.local
+.env*
+!.env.example
 iosApp/DerivedData/
 iosApp/Pods/
 iosApp/iosApp.xcworkspace/xcuserdata/
 *.keystore
 *.jks
 kotlin-js-store/
+
+# Left over from the Bun web app this project used to be
+node_modules/
+dist/
+coverage/
+*.log
+
+.claude/worktrees/
