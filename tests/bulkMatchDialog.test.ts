@@ -96,6 +96,15 @@ describe('the bulk match window, choosing a source', () => {
     expect(html).toContain('40 songs were searched in the last 30 days');
   });
 
+  test('speaks of one song when a recent search leaves out one', () => {
+    const html = text(
+      render({ phase: 'choose', error: null }, { unmatchedCount: 100, searchableCount: 99 })
+    );
+
+    expect(html).toContain('1 song was searched in the last 30 days and is left out');
+    expect(html).toContain('Search it again');
+  });
+
   test('shows why the last try failed', () => {
     const html = render({ phase: 'choose', error: 'That link holds no playlist.' });
 

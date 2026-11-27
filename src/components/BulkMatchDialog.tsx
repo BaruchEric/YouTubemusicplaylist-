@@ -167,7 +167,7 @@ function ChooseBody({
                 {skippedCount === 1 ? 'is' : 'are'} left out, since YouTube would give the same
                 answer.{' '}
                 <button type="button" onClick={onForgetSearched} className={LINK}>
-                  Search them again
+                  {skippedCount === 1 ? 'Search it again' : 'Search them again'}
                 </button>
               </p>
             )}
