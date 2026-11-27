@@ -1,0 +1,193 @@
+CREATE TABLE track_entity (
+    id TEXT NOT NULL PRIMARY KEY,
+    file_key TEXT NOT NULL,
+    drive_file_id TEXT,
+    folder_name TEXT NOT NULL,
+    relative_path TEXT NOT NULL,
+    is_missing INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    added_at INTEGER NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
+CREATE INDEX idx_track_file_key ON track_entity(file_key);
+CREATE INDEX idx_track_drive_id ON track_entity(drive_file_id);
+CREATE INDEX idx_track_folder ON track_entity(folder_name);
+
+CREATE TABLE playlist_entity (
+    id TEXT NOT NULL PRIMARY KEY,
+    updated_at INTEGER NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
+CREATE TABLE smart_playlist_entity (
+    id TEXT NOT NULL PRIMARY KEY,
+    updated_at INTEGER NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
+CREATE TABLE sync_event_entity (
+    id TEXT NOT NULL PRIMARY KEY,
+    timestamp INTEGER NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
+CREATE TABLE scan_log_entity (
+    id TEXT NOT NULL PRIMARY KEY,
+    started_at INTEGER NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
+CREATE TABLE watched_folder_entity (
+    name TEXT NOT NULL PRIMARY KEY,
+    last_scanned_at INTEGER,
+    payload_json TEXT NOT NULL
+);
+
+CREATE TABLE folder_mapping_entity (
+    drive_folder_id TEXT NOT NULL PRIMARY KEY,
+    updated_at INTEGER NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
+CREATE TABLE tombstone_entity (
+    tombstone_key TEXT NOT NULL PRIMARY KEY,
+    category TEXT NOT NULL,
+    deleted_at INTEGER NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
+CREATE TABLE play_stats_entity (
+    track_id TEXT NOT NULL PRIMARY KEY,
+    play_count INTEGER NOT NULL DEFAULT 0,
+    completed_count INTEGER NOT NULL DEFAULT 0,
+    skip_count INTEGER NOT NULL DEFAULT 0,
+    last_played_at INTEGER
+);
+
+CREATE TABLE play_history_entity (
+    id TEXT NOT NULL PRIMARY KEY,
+    played_at INTEGER NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
+CREATE TABLE loudness_cache_entity (
+    track_key TEXT NOT NULL PRIMARY KEY,
+    integrated_lufs REAL NOT NULL,
+    peak REAL NOT NULL,
+    analyzed_at INTEGER NOT NULL,
+    album TEXT
+);
+
+CREATE TABLE kv_store_entity (
+    key TEXT NOT NULL PRIMARY KEY,
+    value_json TEXT NOT NULL
+);
+
+selectAllTracks:
+SELECT payload_json FROM track_entity ORDER BY added_at DESC;
+
+upsertTrack:
+INSERT OR REPLACE INTO track_entity(id, file_key, drive_file_id, folder_name, relative_path, is_missing, updated_at, added_at, payload_json)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+deleteTrackById:
+DELETE FROM track_entity WHERE id = ?;
+
+deleteAllTracks:
+DELETE FROM track_entity;
+
+selectAllPlaylists:
+SELECT payload_json FROM playlist_entity ORDER BY updated_at DESC;
+
+upsertPlaylist:
+INSERT OR REPLACE INTO playlist_entity(id, updated_at, payload_json) VALUES (?, ?, ?);
+
+deletePlaylistById:
+DELETE FROM playlist_entity WHERE id = ?;
+
+deleteAllPlaylists:
+DELETE FROM playlist_entity;
+
+selectAllSmartPlaylists:
+SELECT payload_json FROM smart_playlist_entity ORDER BY updated_at DESC;
+
+upsertSmartPlaylist:
+INSERT OR REPLACE INTO smart_playlist_entity(id, updated_at, payload_json) VALUES (?, ?, ?);
+
+deleteSmartPlaylistById:
+DELETE FROM smart_playlist_entity WHERE id = ?;
+
+deleteAllSmartPlaylists:
+DELETE FROM smart_playlist_entity;
+
+selectSyncEvents:
+SELECT payload_json FROM sync_event_entity ORDER BY timestamp DESC LIMIT 50;
+
+upsertSyncEvent:
+INSERT OR REPLACE INTO sync_event_entity(id, timestamp, payload_json) VALUES (?, ?, ?);
+
+deleteAllSyncEvents:
+DELETE FROM sync_event_entity;
+
+selectScanLogs:
+SELECT payload_json FROM scan_log_entity ORDER BY started_at DESC LIMIT 200;
+
+upsertScanLog:
+INSERT OR REPLACE INTO scan_log_entity(id, started_at, payload_json) VALUES (?, ?, ?);
+
+deleteAllScanLogs:
+DELETE FROM scan_log_entity;
+
+selectWatchedFolders:
+SELECT payload_json FROM watched_folder_entity ORDER BY name ASC;
+
+upsertWatchedFolder:
+INSERT OR REPLACE INTO watched_folder_entity(name, last_scanned_at, payload_json) VALUES (?, ?, ?);
+
+deleteWatchedFolder:
+DELETE FROM watched_folder_entity WHERE name = ?;
+
+selectFolderMappings:
+SELECT payload_json FROM folder_mapping_entity ORDER BY updated_at DESC;
+
+upsertFolderMapping:
+INSERT OR REPLACE INTO folder_mapping_entity(drive_folder_id, updated_at, payload_json) VALUES (?, ?, ?);
+
+deleteAllFolderMappings:
+DELETE FROM folder_mapping_entity;
+
+selectTombstonesByCategory:
+SELECT payload_json FROM tombstone_entity WHERE category = ? ORDER BY deleted_at DESC;
+
+upsertTombstone:
+INSERT OR REPLACE INTO tombstone_entity(tombstone_key, category, deleted_at, payload_json) VALUES (?, ?, ?, ?);
+
+deleteTombstonesByCategory:
+DELETE FROM tombstone_entity WHERE category = ?;
+
+selectAllPlayStats:
+SELECT * FROM play_stats_entity;
+
+upsertPlayStats:
+INSERT OR REPLACE INTO play_stats_entity(track_id, play_count, completed_count, skip_count, last_played_at)
+VALUES (?, ?, ?, ?, ?);
+
+selectPlayHistory:
+SELECT payload_json FROM play_history_entity ORDER BY played_at DESC LIMIT 2000;
+
+upsertPlayHistory:
+INSERT OR REPLACE INTO play_history_entity(id, played_at, payload_json) VALUES (?, ?, ?);
+
+selectAllLoudness:
+SELECT * FROM loudness_cache_entity ORDER BY analyzed_at DESC LIMIT 600;
+
+upsertLoudness:
+INSERT OR REPLACE INTO loudness_cache_entity(track_key, integrated_lufs, peak, analyzed_at, album)
+VALUES (?, ?, ?, ?, ?);
+
+selectKv:
+SELECT value_json FROM kv_store_entity WHERE key = ?;
+
+upsertKv:
+INSERT OR REPLACE INTO kv_store_entity(key, value_json) VALUES (?, ?);
