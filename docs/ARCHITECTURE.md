@@ -154,6 +154,20 @@ The check runs when CrateSync holds a YouTube token anyway: in `handleStartYouTu
 
 Before this rule a file in a folder never matched a Drive song, so scanning the local copy of a Drive library added every song a second time.
 
+A song the Drive listing added has a duration of 0 until a file has been read. When the scan finds the local file of such a song, `readTagsFromScannedFile` in [`src/utils/driveTagReader.ts`](../src/utils/driveTagReader.ts) reads its tags and length from that file, so the song loses its file-name title in the same scan.
+
+## Reading a Drive song's tags without downloading it
+
+The Drive listing returns a file's name, size and folders, and `buildTrackStubFromDriveAudio` guesses the title, artist and album from them. Read Tags on the Drive Sync & Transfer page replaces the guess with what the file says.
+
+1. **Which songs.** `needsTagRead` picks the songs with a Drive file and a duration of 0. A read sets the duration, so a song is read once.
+2. **What is downloaded.** `downloadDriveFileRange` in [`src/utils/googleDriveApi.ts`](../src/utils/googleDriveApi.ts) sends `GET files/{id}?alt=media` with a `Range` header. `readTagsFromFileHead` in [`src/utils/audioMetadata.ts`](../src/utils/audioMetadata.ts) asks for the first 128 KB (`TAG_HEAD_BYTES`). An MP3 whose ID3v2 tag is longer gets one more read, and so does an MP4 whose `moov` atom sits elsewhere. A song this browser stores is read from the stored copy and costs no download.
+3. **The length.** MP3 takes it from the Xing or VBRI frame count, or from the file size and the first frame's bitrate when the file has neither. MP4 takes it from `mvhd`, FLAC from `STREAMINFO`, WAV from its `fmt` and `data` chunks. An MP3 with a changing bitrate and no Xing header gets a wrong length, 10 files of 2,573 in the library this was checked against.
+4. **Which fields change.** `applyFileTags` in [`src/utils/fileTags.ts`](../src/utils/fileTags.ts) is the one rule, shared with Cache Offline. A text field takes the file's value while the song still holds a placeholder or the guess from its name and folders. A value the user typed stays. Genre and year are filled only when empty, and a cover only when the song has none.
+5. **The run.** `readDriveTrackTags` in `driveTagReader.ts` reads four songs at a time and hands the changes to `App.tsx` every 25 songs, so a stop or a reload keeps what was read. A rate limit waits 1, 2 and 4 seconds and then stops the run. A refused sign-in stops it and shows the reconnect state.
+
+The changes go through `setTracks`, so a changed title, artist or album is stamped as an edit and reaches other devices with the next push. The manifest of a device that has not read a song still says 0 for its duration, and a pull keeps the duration this device knows.
+
 ## How the client code is split
 
 `bun run build` writes about twenty scripts where it used to write one of 1.7 MB.
@@ -189,7 +203,7 @@ Managed by [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts), [`sr
 ### `src/utils/`
 | File | Responsibility |
 | --- | --- |
-| `audioMetadata.ts` | Binary ID3v2/ID3v1/FLAC/MP4 tag parser, cover art compressor (`160x160` JPEG), SHA-256 hashing |
+| `audioMetadata.ts` | Binary ID3v2/ID3v1/FLAC/MP4 tag parser, cover art compressor (`160x160` JPEG), SHA-256 hashing. Also reads tags and length from the first bytes of a file through a range reader (`readTagsFromFileHead`, `readTagsFromBlob`) |
 | `audioIntegrity.ts` | Binary header inspection, container mismatch checks, duration plausibility, corrupt tag detection |
 | `audioTransitions.ts` | Crossfade curve math, gapless album continuity detection, transition settings persistence |
 | `replayGain.ts` | Track/album LUFS loudness analysis, gain calculation, clipping prevention, loudness cache |
@@ -202,7 +216,7 @@ Managed by [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts), [`sr
 | `deviceCache.ts` | Counts cached songs with no Drive copy and words the Clear Device Cache dialog |
 | `storage.ts` | IndexedDB (`CrateSyncDB`) wrapper for library state, directory handles, and audio blobs |
 | `googleAuth.ts` | Firebase Google OAuth sign-in/out, in-memory Drive token management, the separate in-memory YouTube token (`connectYouTube`), Firebase ID tokens for the AI endpoints |
-| `googleDriveApi.ts` | Google Drive v3 client (folder scanning, multipart and resumable uploads, downloads, manifest I/O, retry/backoff) |
+| `googleDriveApi.ts` | Google Drive v3 client (folder scanning, multipart and resumable uploads, downloads, byte-range downloads, manifest I/O, retry/backoff) |
 | `folderMappings.ts` | Device profiles, cross-platform path normalization, Drive-to-local binding resolution, merging & tombstones |
 | `libraryMerge.ts` | Joins two devices' songs and playlists for a push or a pull: newest edit wins, deletions as tombstones, edit stamps |
 | `youtubeLinks.ts` | YouTube ID/playlist URL extraction, queue batch builders, M3U8/CSV/JSON/TXT import & export |
@@ -211,6 +225,8 @@ Managed by [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts), [`sr
 | `bulkSearchMemory.ts` | Remembers for 30 days which songs YouTube was searched for |
 | `matchRefresh.ts` | The 30-day check of saved matches: which are due, the `videos.list` question, clearing the ones YouTube no longer has |
 | `scanMatch.ts` | Tells which library song a scanned file is, and links a Drive song to its local file |
+| `fileTags.ts` | The guess the Drive listing makes from a file's name and folders, and the one rule for which fields a file's tags replace (`applyFileTags`) |
+| `driveTagReader.ts` | Read Tags: which Drive songs need a read, the run over them with retries, batches and a stop, and the tag read a folder scan does for a linked song |
 | `youtubePush.ts` | Plans and runs a push to YouTube: the estimate shown before sign-in, the diff, which songs have to move, the write loop, and the record stored on the playlist |
 | `smartPlaylists.ts` | Smart Playlist rule definitions, field metadata, and evaluation/sorting engine |
 | `smartSearch.ts` | Global search tokenizer, query operator parser, and scored track/album/genre/playlist matching |

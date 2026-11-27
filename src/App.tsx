@@ -93,7 +93,7 @@ import {
   isSha256Hash,
   readTagsFromBlob,
 } from './utils/audioMetadata';
-import type { TagReadUpdates } from './utils/driveTagReader';
+import { readTagsFromScannedFile, type TagReadUpdates } from './utils/driveTagReader';
 import { applyFileTags } from './utils/fileTags';
 import {
   clearAllAudioBlobs,
@@ -762,8 +762,16 @@ export default function App() {
                 });
               }
             }
+            // A Drive song nothing has read yet takes its tags and length from this file.
+            let fromFile: Partial<LocalTrack> = {};
+            try {
+              fromFile = await readTagsFromScannedFile(existing, file);
+            } catch {
+              // The song keeps what the Drive listing guessed. Read Tags can try again.
+            }
             updatedExistingIds.set(existing.id, {
               ...existing,
+              ...fromFile,
               contentHash,
               lastSeenAt: now,
               isMissingOnDevice: false,

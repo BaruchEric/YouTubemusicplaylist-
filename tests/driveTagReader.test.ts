@@ -7,6 +7,7 @@ import {
   describeTagReadResult,
   needsTagRead,
   readDriveTrackTags,
+  readTagsFromScannedFile,
   type TagReadProgress,
   type TagReadResult,
   type TagReadUpdates,
@@ -488,5 +489,49 @@ describe('describeTagReadResult', () => {
     expect(text).toBe(
       'Read tags for 40 songs (3.00 GB downloaded). The Google Drive session ended. Sign in again to read the rest.'
     );
+  });
+});
+
+describe('readTagsFromScannedFile', () => {
+  test('fills in a Drive song nothing has read from the local file a scan found', async () => {
+    const [song] = fakeDrive(1).songs;
+
+    const changes = await readTagsFromScannedFile(song, new Blob([taggedMp3('Fireflies')]));
+
+    // The folder already gave the artist, so only what the file adds comes back.
+    expect(changes).toEqual({ title: 'Fireflies', duration: XING_SECONDS });
+  });
+
+  test('keeps a title the user typed and still takes the duration', async () => {
+    const [stub] = fakeDrive(1).songs;
+    const song = { ...stub, title: 'My Own Name' };
+
+    const changes = await readTagsFromScannedFile(song, new Blob([taggedMp3('Fireflies')]));
+
+    expect(changes.title).toBeUndefined();
+    expect(changes.duration).toBe(XING_SECONDS);
+  });
+
+  test('does not read the file of a song that has been read before', async () => {
+    const [stub] = fakeDrive(1).songs;
+    const song = { ...stub, duration: 200 };
+    const file = new Blob([taggedMp3('Fireflies')]);
+    let reads = 0;
+    const counted = new Proxy(file, {
+      get(target, key) {
+        if (key === 'slice' || key === 'arrayBuffer') reads += 1;
+        const value = Reflect.get(target, key);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+
+    expect(await readTagsFromScannedFile(song, counted)).toEqual({});
+    expect(reads).toBe(0);
+  });
+
+  test('leaves a song that was never on Drive alone', async () => {
+    const local = makeTrack({ id: 'local', duration: 0 });
+
+    expect(await readTagsFromScannedFile(local, new Blob([taggedMp3('Fireflies')]))).toEqual({});
   });
 });

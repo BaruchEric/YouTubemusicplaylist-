@@ -34,6 +34,20 @@ export function countTracksNeedingTagRead(tracks: readonly LocalTrack[]): number
   return count;
 }
 
+/**
+ * The fields a folder scan fills in on a Drive song from the local file it found for it. The
+ * file is already on this device, so reading it costs no download. A song that has been read
+ * before, or that was never on Drive, comes back with nothing to change.
+ */
+export async function readTagsFromScannedFile(
+  track: LocalTrack,
+  file: Blob,
+  options: { compressCover?: CoverArtCompressor } = {}
+): Promise<Partial<LocalTrack>> {
+  if (!needsTagRead(track)) return {};
+  return applyFileTags(track, await readTagsFromBlob(file, track.fileName, options));
+}
+
 /** Track id to the fields of that song the file changes. */
 export type TagReadUpdates = ReadonlyMap<string, Partial<LocalTrack>>;
 
