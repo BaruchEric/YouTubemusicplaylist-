@@ -70,6 +70,7 @@ import {
   trackMatchesLocalFolder,
   type ManifestFolderState,
 } from '../utils/folderMappings';
+import type { PrepareFolderRead, ReadTrackAudio } from '../utils/deviceAudio';
 import { clearDeviceCacheMessage, summarizeDeviceCache } from '../utils/deviceCache';
 import {
   countTracksNeedingTagRead,
@@ -85,7 +86,6 @@ import {
   type LibraryPushMerge,
   type LocalLibraryForPush,
 } from '../utils/libraryMerge';
-import { loadAudioBlob } from '../utils/storage';
 import type { ScannedFileEntry } from '../utils/syncEngine';
 import {
   exportPlaylistToCSV,
@@ -112,10 +112,18 @@ interface GoogleDriveTransferSectionProps {
   devices: SyncDeviceProfile[];
   folderMappings: DriveFolderMapping[];
   trackMap: Map<string, LocalTrack>;
+  /** File keys of the copies in the browser's storage, which Clear Device Cache removes. */
   storedAudioKeys: Set<string>;
   deviceCacheBytes: number;
+  /**
+   * True when this device holds the song's audio: in memory, in the browser's storage or in
+   * the folder the user picked. A Drive song that passes needs no download.
+   */
   hasPlayableFile: (fileKey: string) => boolean;
-  getCachedAudioBlob: (fileKey: string) => Promise<Blob | null>;
+  /** Reads a song's bytes from this device: memory, then the stored copy, then the folder. */
+  readTrackAudio: ReadTrackAudio;
+  /** Asks for the picked folder once, at the click that starts an upload or a tag read. */
+  prepareFolderRead: PrepareFolderRead;
   onRenameCurrentDevice: (newName: string) => void;
   onSaveFolderMapping: (params: {
     driveFolderId: string;
@@ -268,7 +276,8 @@ export function GoogleDriveTransferSection({
   storedAudioKeys,
   deviceCacheBytes,
   hasPlayableFile,
-  getCachedAudioBlob,
+  readTrackAudio,
+  prepareFolderRead,
   onRenameCurrentDevice,
   onSaveFolderMapping,
   onUnbindDeviceFromMapping,
@@ -736,7 +745,7 @@ export function GoogleDriveTransferSection({
         label: 'Offline / Disconnected',
         detail:
           cachedSongsCount > 0
-            ? `${cachedSongsCount} song${cachedSongsCount === 1 ? '' : 's'} cached offline on this playing device. Connect Google Drive to sync changes.`
+            ? `${cachedSongsCount} song${cachedSongsCount === 1 ? '' : 's'} on this playing device. Connect Google Drive to sync changes.`
             : 'Connect Google Drive as your source of truth for songs, playlists, and device caching.',
         tone: 'muted' as const,
       };
@@ -852,7 +861,7 @@ export function GoogleDriveTransferSection({
     if (queue.length === 0) {
       setStatusMessage({
         tone: 'info',
-        text: 'All songs in this selection are already cached offline on this device.',
+        text: 'All songs in this selection are already on this device.',
       });
       return;
     }
@@ -922,6 +931,8 @@ export function GoogleDriveTransferSection({
     setTagReadProgress({ done: 0, total: targets.length, bytes: 0 });
 
     try {
+      // A song with a file in the picked folder gives its tags from that file, with no download.
+      await prepareFolderRead(targets);
       const result = await readDriveTrackTags({
         tracks: targets,
         signal: controller.signal,
@@ -934,7 +945,7 @@ export function GoogleDriveTransferSection({
           return downloadDriveFileRange(token, fileId, start, end, undefined, controller.signal);
         },
         localBlob: async (track) =>
-          hasPlayableFile(track.fileKey) ? getCachedAudioBlob(track.fileKey) : null,
+          hasPlayableFile(track.fileKey) ? readTrackAudio(track) : null,
         onProgress: setTagReadProgress,
         onBatch: onApplyTrackTagUpdates,
       });
@@ -1153,6 +1164,14 @@ export function GoogleDriveTransferSection({
     cancelBatchRef.current = false;
 
     try {
+      // An upload reads the song's file. Only this click can ask for the picked folder: by
+      // the time the first song is read, Drive calls have used the click up.
+      if (action.kind === 'sync-mapped-folders') {
+        await prepareFolderRead(localOnlyTracksWithAudio);
+      } else if (action.kind === 'push-source-of-truth') {
+        await prepareFolderRead(action.localSongsToUpload);
+      }
+
       if (action.kind === 'create-drive-folder') {
         const targetParentId =
           action.parentFolderId && action.parentFolderId !== 'root'
@@ -1204,8 +1223,7 @@ export function GoogleDriveTransferSection({
                 total: folderUploads.length,
                 activeItem: track.fileName,
               });
-              const blob =
-                (await getCachedAudioBlob(track.fileKey)) ?? (await loadAudioBlob(track.fileKey));
+              const blob = await readTrackAudio(track);
               if (!blob) continue;
 
               const uploaded = await uploadAudioFileToDrive(token, blob, track.fileName, {
@@ -1405,8 +1423,7 @@ export function GoogleDriveTransferSection({
             activeItem: track.fileName,
           });
 
-          const blob =
-            (await getCachedAudioBlob(track.fileKey)) ?? (await loadAudioBlob(track.fileKey));
+          const blob = await readTrackAudio(track);
           if (!blob) continue;
 
           const uploadedFile = await uploadAudioFileToDrive(token, blob, track.fileName, {
@@ -1775,7 +1792,7 @@ export function GoogleDriveTransferSection({
             </div>
             <div className="flex items-center justify-between text-xs font-mono tabular-nums">
               <span className="text-white">
-                {cachedSongsCount} / {tracks.length} songs cached offline
+                {cachedSongsCount} / {tracks.length} songs on this device
               </span>
               <span className="text-[#8B92A2]">{cacheCoveragePct}%</span>
             </div>
@@ -2283,6 +2300,9 @@ export function GoogleDriveTransferSection({
                   <div className="rounded-md border border-white/[0.07] bg-[#0B0C0E] divide-y divide-white/[0.06] max-h-80 overflow-y-auto">
                     {filteredCatalogTracks.map((track) => {
                       const isCached = hasPlayableFile(track.fileKey);
+                      // A song in the picked folder is on this device with no stored copy,
+                      // so there is nothing in the browser's storage to remove for it.
+                      const hasStoredCopy = storedAudioKeys.has(track.fileKey);
                       const inDrive = Boolean(track.driveFileId);
                       const isCachingThis = cachingTrackId === track.id;
 
@@ -2312,8 +2332,10 @@ export function GoogleDriveTransferSection({
 
                           {/* Crisp Monospace Sync/Cache State (zero pill spam) */}
                           <div className="hidden sm:flex items-center gap-2 text-[11px] font-mono shrink-0">
-                            {inDrive && isCached ? (
+                            {inDrive && hasStoredCopy ? (
                               <span className="text-[#22C55E]">Drive · Cached Offline</span>
+                            ) : inDrive && isCached ? (
+                              <span className="text-[#22C55E]">Drive · On This Device</span>
                             ) : inDrive && !isCached ? (
                               <span className="text-[#9CA3AF]">Drive · Cloud Only</span>
                             ) : isCached ? (
@@ -2331,7 +2353,7 @@ export function GoogleDriveTransferSection({
                                 onClick={() => onPlayTrack(track.id)}
                                 title={
                                   isCached
-                                    ? 'Play from local offline cache'
+                                    ? 'Play from this device'
                                     : 'Stream & cache from Google Drive'
                                 }
                                 className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-[#D1D5DB] hover:text-white hover:bg-white/[0.08] transition-colors"
@@ -2358,7 +2380,7 @@ export function GoogleDriveTransferSection({
                               </button>
                             )}
 
-                            {inDrive && isCached && (
+                            {inDrive && hasStoredCopy && (
                               <button
                                 type="button"
                                 disabled={isMutating}

@@ -58,6 +58,8 @@ import type {
 import type { TrackIntegrityRepairPatch } from './components/AudioIntegrityPanel';
 import { evaluateSmartPlaylist } from './utils/smartPlaylists';
 import {
+  ensureFolderPermission,
+  hasUserGesture,
   loadWatchInterval,
   queryFolderPermission,
   resolveWatcherStatus,
@@ -65,6 +67,18 @@ import {
   type FolderPermission,
   type WatchIntervalSec,
 } from './utils/folderWatch';
+import {
+  hasAudioOnDevice,
+  needsFolderRead,
+  readTrackAudio,
+  type PrepareFolderRead,
+  type ReadTrackAudio,
+} from './utils/deviceAudio';
+import {
+  describeFreedStorage,
+  planFolderScanStorage,
+  readTrackFromFolder,
+} from './utils/folderAudio';
 import {
   dropTombstoned,
   mergeLibraryForPush,
@@ -100,11 +114,14 @@ import {
   clearAllAudioBlobs,
   deleteAudioBlobs,
   getAudioCacheStats,
+  listStoredAudioKeys,
   loadAudioBlob,
   loadDirectoryHandle,
+  loadFolderFileKeys,
   loadLibraryState,
   saveAudioBlob,
   saveDirectoryHandle,
+  saveFolderFileKeys,
   saveLibraryState,
 } from './utils/storage';
 import {
@@ -296,6 +313,15 @@ export default function App() {
   }, [storedAudioKeys]);
   const dirHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
   const [hasLiveHandle, setHasLiveHandle] = useState(false);
+  // File keys of the songs the last scan of the picked folder saw there. Those songs play
+  // from the folder, so no copy of them sits in the browser's storage.
+  const [folderFileKeys, setFolderFileKeys] = useState<Set<string>>(new Set());
+  const folderFileKeysRef = useRef<Set<string>>(folderFileKeys);
+  /** Takes the new set at once, so a song plays from the folder before the next render. */
+  const applyFolderFileKeys = useCallback((keys: Set<string>) => {
+    folderFileKeysRef.current = keys;
+    setFolderFileKeys(keys);
+  }, []);
 
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const filesInputRef = useRef<HTMLInputElement | null>(null);
@@ -408,13 +434,72 @@ export default function App() {
     [setTracks]
   );
 
-  const hasCachedAudio = useCallback(
-    (fileKey: string) => storedAudioKeysRef.current.has(fileKey),
+  /**
+   * Whether this device holds a song's audio: in memory, in the browser's storage or in the
+   * picked folder. For handlers, which run between renders and read the sets through refs.
+   */
+  const holdsAudioKey = useCallback(
+    (fileKey: string) =>
+      hasAudioOnDevice(fileKey, {
+        memory: fileMapRef.current,
+        storedKeys: storedAudioKeysRef.current,
+        folderKeys: folderFileKeysRef.current,
+      }),
     []
   );
 
+  /** Finds out whether the picked folder may be read, and shows the answer on the watcher too. */
+  const ensureFolderAccess = useCallback(async (handle: object, mayPrompt: boolean) => {
+    const permission = await ensureFolderPermission(handle, mayPrompt);
+    setFolderPermission(permission);
+    return permission;
+  }, []);
+
+  /** Reads a song's bytes from this device: memory, then the stored copy, then the picked folder. */
+  const readDeviceAudio = useCallback<ReadTrackAudio>(
+    (track, ask) =>
+      readTrackAudio(
+        track,
+        {
+          memory: fileMapRef.current,
+          loadStored: loadAudioBlob,
+          readFromFolder: (song, folderAsk) =>
+            readTrackFromFolder(
+              song,
+              {
+                folder: dirHandleRef.current,
+                fileKeys: folderFileKeysRef.current,
+                ensurePermission: ensureFolderAccess,
+              },
+              // The browser shows its prompt only while a click is fresh, so a song that
+              // starts by itself goes on to the next source without one.
+              folderAsk === 'may-ask' && hasUserGesture()
+            ),
+        },
+        ask
+      ),
+    [ensureFolderAccess]
+  );
+
+  /** Asks for the picked folder at the click that starts a job, when the job has to read it. */
+  const prepareFolderRead = useCallback<PrepareFolderRead>(
+    async (songs) => {
+      const folder = dirHandleRef.current;
+      const audio = {
+        memory: fileMapRef.current,
+        storedKeys: storedAudioKeysRef.current,
+        folderKeys: folderFileKeysRef.current,
+      };
+      if (!folder || !needsFolderRead(songs, audio)) return;
+      await ensureFolderAccess(folder, hasUserGesture());
+    },
+    [ensureFolderAccess]
+  );
+
   const audioPlayer = useAudioPlayer(tracks, fileMapRef, {
-    hasCachedAudio,
+    hasAudioOnDevice: holdsAudioKey,
+    readAudio: readDeviceAudio,
+    prepareFolderRead,
     onPlayRecorded: handlePlayRecorded,
     onTrackCachedFromDrive: ({ trackId, blob }) => {
       void handleCacheDriveTrackAudio(trackId, blob);
@@ -425,9 +510,10 @@ export default function App() {
   useEffect(() => {
     let active = true;
     (async () => {
-      const [savedState, savedHandle, cacheStats] = await Promise.all([
+      const [savedState, savedHandle, savedFolderKeys, cacheStats] = await Promise.all([
         loadLibraryState(),
         loadDirectoryHandle(),
+        loadFolderFileKeys(),
         getAudioCacheStats(),
       ]);
       if (!active) return;
@@ -455,6 +541,8 @@ export default function App() {
       if (savedHandle) {
         dirHandleRef.current = savedHandle;
         setHasLiveHandle(true);
+        // Without the folder the keys name files nothing here can read, so they load with it.
+        applyFolderFileKeys(savedFolderKeys);
         setFolderPermission(await queryFolderPermission(savedHandle));
       }
       setHydrated(true);
@@ -586,6 +674,13 @@ export default function App() {
       options: {
         folderRootName?: string;
         isFullFolderScan: boolean;
+        /**
+         * Where the songs play from once the scan is over. 'folder' is for entries walked
+         * from the saved folder handle: the app reads them from the folder again later, so it
+         * stores no copy. 'browser-storage' is for files the app is handed once, which play
+         * after a reload only from a stored copy.
+         */
+        audioStaysIn: 'folder' | 'browser-storage';
         quiet?: boolean;
         source?: ScanTriggerSource;
         startedAt?: number;
@@ -593,6 +688,7 @@ export default function App() {
         walkErrors?: ScanErrorEntry[];
       }
     ) => {
+      const playsFromFolder = options.audioStaysIn === 'folder';
       const startedAt = options.startedAt ?? Date.now();
       const source: ScanTriggerSource =
         options.source ?? (options.quiet ? 'background-watch' : 'manual-folder');
@@ -606,6 +702,13 @@ export default function App() {
         const folderScope = options.folderRootName?.toLowerCase() ?? '';
         let newlyMissingCount = 0;
         let totalMissingInFolder = 0;
+
+        if (playsFromFolder && errors.length === 0) {
+          // The scan read the folder and found no audio in it, so no song plays from it. A
+          // scan that could not read the folder says nothing about what the folder holds.
+          applyFolderFileKeys(new Set());
+          await saveFolderFileKeys(new Set());
+        }
 
         if (options.isFullFolderScan && folderScope) {
           const matchingTracks = tracksRef.current.filter(
@@ -710,13 +813,11 @@ export default function App() {
         tracksRef.current.forEach((t) => {
           existingByKey.set(t.fileKey, t);
         });
-        const matcher = createScanMatcher(
-          tracksRef.current,
-          (fileKey) => fileMapRef.current.has(fileKey) || storedAudioKeysRef.current.has(fileKey)
-        );
+        const matcher = createScanMatcher(tracksRef.current, holdsAudioKey);
         let linkedDriveCount = 0;
 
         const seenKeys = new Set<string>();
+        const seenInFolder: Array<{ fileKey: string; size: number }> = [];
         const newlyParsed: LocalTrack[] = [];
         const updatedExistingIds = new Map<string, LocalTrack>();
         const newlyCachedKeys: string[] = [];
@@ -739,10 +840,12 @@ export default function App() {
 
           seenKeys.add(targetKey);
           fileMapRef.current.set(targetKey, file);
-          // Persist audio blob in IndexedDB so playback survives reloads. Skip keys already
-          // stored (the key includes the byte size): auto-watch rescans every 30 s and would
-          // otherwise rewrite the whole library into IndexedDB on every tick.
-          if (!storedAudioKeysRef.current.has(targetKey)) {
+          if (playsFromFolder) {
+            // The song is read from the folder when it plays, so the scan stores no copy.
+            seenInFolder.push({ fileKey: targetKey, size: file.size });
+          } else if (!storedAudioKeysRef.current.has(targetKey)) {
+            // The app is handed this file once, so a copy in IndexedDB is what plays after a
+            // reload. A key already stored is skipped: the key includes the byte size.
             newlyCachedKeys.push(targetKey);
             void saveAudioBlob(targetKey, file);
           }
@@ -876,6 +979,26 @@ export default function App() {
           void refreshDeviceCacheStats();
         }
 
+        let freedNote: string | null = null;
+        if (playsFromFolder) {
+          // Asked of the store itself: the keys held in state can trail a copy saved a moment ago.
+          const storage = planFolderScanStorage(seenInFolder, await listStoredAudioKeys());
+          applyFolderFileKeys(storage.folderKeys);
+          // The copies go only after the list of folder songs is saved. A reload must find
+          // the songs in the folder before it finds their copies gone.
+          const saved = await saveFolderFileKeys(storage.folderKeys);
+          if (saved && storage.freeKeys.length > 0) {
+            const freed = await deleteAudioBlobs(storage.freeKeys);
+            await refreshDeviceCacheStats();
+            if (freed) {
+              freedNote = describeFreedStorage({
+                songCount: storage.freeKeys.length,
+                bytes: storage.freedBytes,
+              });
+            }
+          }
+        }
+
         if (options.folderRootName) {
           setWatchedFolderName(options.folderRootName);
         }
@@ -947,7 +1070,7 @@ export default function App() {
               errors.length > 0
                 ? `Background scan finished (${errors.length} error${errors.length === 1 ? '' : 's'})`
                 : 'Background scan complete',
-            description: `${folderLabel}${audioEntries.length} file${audioEntries.length === 1 ? '' : 's'} checked`,
+            description: `${folderLabel}${audioEntries.length} file${audioEntries.length === 1 ? '' : 's'} checked${freedNote ? `. ${freedNote}` : ''}`,
             stats,
             tone:
               newlyMissingCount > 0 || errors.length > 0
@@ -955,7 +1078,7 @@ export default function App() {
                 : addedCount > 0 || restoredCount > 0
                   ? 'success'
                   : 'neutral',
-            durationMs: hasDelta || errors.length > 0 ? 6000 : 4000,
+            durationMs: hasDelta || errors.length > 0 || freedNote ? 6000 : 4000,
             action:
               errors.length > 0
                 ? {
@@ -1009,14 +1132,14 @@ export default function App() {
             parts.length > 0
               ? `${parts.join(' · ')} (${audioEntries.length} total scanned).`
               : `All ${audioEntries.length} audio file${audioEntries.length === 1 ? '' : 's'} already in your library.`;
-          setScanNotice(summary);
+          setScanNotice(freedNote ? `${summary} ${freedNote}` : summary);
         }
       } finally {
         setIsScanning(false);
         setScanProgress(null);
       }
     },
-    [appendScanLog, pushToast, refreshDeviceCacheStats]
+    [appendScanLog, applyFolderFileKeys, holdsAudioKey, pushToast, refreshDeviceCacheStats]
   );
 
   // Re-scan active mounted FileSystemDirectoryHandle
@@ -1032,58 +1155,45 @@ export default function App() {
       const source: ScanTriggerSource = quiet ? 'background-watch' : 'manual-folder';
 
       try {
-        // Request read permission if handle was restored from IndexedDB
-        const handleWithPerm = handle as FileSystemDirectoryHandle & {
-          queryPermission?: (desc: { mode: 'read' }) => Promise<string>;
-          requestPermission?: (desc: { mode: 'read' }) => Promise<string>;
-        };
-        if (handleWithPerm.queryPermission) {
-          const perm = await handleWithPerm.queryPermission({ mode: 'read' });
-          if (perm !== 'granted') {
-            if (quiet) {
-              // Only a click can ask the browser. Say the watch is paused; do not look busy.
-              setFolderPermission('needs-permission');
-              return;
-            }
-            const granted = await handleWithPerm.requestPermission?.({ mode: 'read' });
-            if (granted !== 'granted') {
-              setFolderPermission('needs-permission');
-              const completedAt = Date.now();
-              appendScanLog({
-                id: crypto.randomUUID(),
-                startedAt,
-                completedAt,
-                durationMs: Math.max(1, completedAt - startedAt),
-                source,
-                folderName: handle.name,
-                totalFilesEncountered: 0,
-                audioFilesProcessed: 0,
-                addedCount: 0,
-                updatedCount: 0,
-                restoredCount: 0,
-                missingCount: 0,
-                skippedNonAudioCount: 0,
-                status: 'failed',
-                errors: [
-                  {
-                    path: handle.name,
-                    message: 'Folder read permission was not granted by the browser.',
-                    code: 'permission',
-                  },
-                ],
-              });
-              setScanNotice('Folder read permission was not granted.');
-              return;
-            }
-          }
+        // A handle restored after a reload needs the user's leave again, and only a click
+        // can ask for it. The player asks the same way when a song in the folder is played.
+        if ((await ensureFolderAccess(handle, !quiet)) !== 'granted') {
+          // The watcher now shows Paused. A timed check stops here and does not look busy.
+          if (quiet) return;
+          const completedAt = Date.now();
+          appendScanLog({
+            id: crypto.randomUUID(),
+            startedAt,
+            completedAt,
+            durationMs: Math.max(1, completedAt - startedAt),
+            source,
+            folderName: handle.name,
+            totalFilesEncountered: 0,
+            audioFilesProcessed: 0,
+            addedCount: 0,
+            updatedCount: 0,
+            restoredCount: 0,
+            missingCount: 0,
+            skippedNonAudioCount: 0,
+            status: 'failed',
+            errors: [
+              {
+                path: handle.name,
+                message: 'Folder read permission was not granted by the browser.',
+                code: 'permission',
+              },
+            ],
+          });
+          setScanNotice('Folder read permission was not granted.');
+          return;
         }
 
-        setFolderPermission('granted');
         setIsScanning(true);
         const report = await walkDirectoryHandleWithReport(handle);
         await ingestAudioEntries(report.entries, {
           folderRootName: handle.name,
           isFullFolderScan: true,
+          audioStaysIn: 'folder',
           quiet,
           source,
           startedAt,
@@ -1126,7 +1236,7 @@ export default function App() {
         setIsScanning(false);
       }
     },
-    [appendScanLog, ingestAudioEntries]
+    [appendScanLog, ensureFolderAccess, ingestAudioEntries]
   );
 
   // Auto-watch interval effect when a live directory handle is active
@@ -1159,7 +1269,21 @@ export default function App() {
         ).showDirectoryPicker;
         const handle = await picker({ mode: 'read' });
         const startedAt = Date.now();
+        const previous = dirHandleRef.current;
+        let isSameFolder = false;
+        try {
+          isSameFolder = previous !== null && (await previous.isSameEntry(handle));
+        } catch {
+          // A handle the browser can no longer compare counts for another folder.
+        }
         dirHandleRef.current = handle;
+        if (!isSameFolder) {
+          // The keys name files of the folder picked before, and a path from that folder
+          // could name some other file in this one. They go before the new folder is saved,
+          // so a reload never pairs the new folder with the old keys. This scan makes new ones.
+          applyFolderFileKeys(new Set());
+          await saveFolderFileKeys(new Set());
+        }
         setHasLiveHandle(true);
         setFolderPermission('granted');
         await saveDirectoryHandle(handle);
@@ -1169,6 +1293,7 @@ export default function App() {
           await ingestAudioEntries(report.entries, {
             folderRootName: handle.name,
             isFullFolderScan: true,
+            audioStaysIn: 'folder',
             source: 'manual-folder',
             startedAt,
             totalEncountered: report.totalFilesEncountered,
@@ -1206,6 +1331,8 @@ export default function App() {
     await ingestAudioEntries(entries, {
       folderRootName,
       isFullFolderScan: Boolean(firstPath),
+      // The folder input hands the files over once and leaves no handle to read them again.
+      audioStaysIn: 'browser-storage',
       source: 'manual-folder',
       startedAt,
       totalEncountered: files.length,
@@ -1221,6 +1348,7 @@ export default function App() {
       files.map((file) => ({ file, relativePath: file.name })),
       {
         isFullFolderScan: false,
+        audioStaysIn: 'browser-storage',
         source: 'file-picker',
         startedAt,
         totalEncountered: files.length,
@@ -1235,6 +1363,7 @@ export default function App() {
     await ingestAudioEntries(entries, {
       folderRootName,
       isFullFolderScan: Boolean(folderRootName),
+      audioStaysIn: 'browser-storage',
       source: 'drag-drop',
       startedAt,
       totalEncountered: entries.length + errors.length,
@@ -1252,18 +1381,13 @@ export default function App() {
     setHashProgress({ processed: 0, total: targets.length });
 
     try {
+      await prepareFolderRead(targets);
       const computedHashes = new Map<string, string>();
       let missingBlobCount = 0;
 
       for (let i = 0; i < targets.length; i++) {
         const track = targets[i];
-        let blob = fileMapRef.current.get(track.fileKey) ?? null;
-        if (!blob) {
-          blob = await loadAudioBlob(track.fileKey);
-          if (blob) {
-            fileMapRef.current.set(track.fileKey, blob);
-          }
-        }
+        const blob = await readDeviceAudio(track);
         if (blob) {
           const hash = await computeAudioHash(blob);
           if (hash) {
@@ -1302,7 +1426,7 @@ export default function App() {
       setIsHashingDuplicates(false);
       setHashProgress(null);
     }
-  }, [isHashingDuplicates]);
+  }, [isHashingDuplicates, prepareFolderRead, readDeviceAudio]);
 
   // Deep Audio Integrity scan: validates raw binary container headers & probes real playable duration
   const handleRunIntegrityScan = useCallback(async () => {
@@ -1314,18 +1438,13 @@ export default function App() {
     setIntegrityProgress({ processed: 0, total: targets.length });
 
     try {
+      await prepareFolderRead(targets);
       const nextResults: Record<string, TrackIntegrityScanResult> = {};
       let verifiedBlobCount = 0;
 
       for (let i = 0; i < targets.length; i++) {
         const track = targets[i];
-        let blob = fileMapRef.current.get(track.fileKey) ?? null;
-        if (!blob) {
-          blob = await loadAudioBlob(track.fileKey);
-          if (blob) {
-            fileMapRef.current.set(track.fileKey, blob);
-          }
-        }
+        const blob = await readDeviceAudio(track);
         if (blob) verifiedBlobCount += 1;
 
         const result = await inspectAudioBlobIntegrity(track, blob);
@@ -1351,7 +1470,7 @@ export default function App() {
       setIsScanningIntegrity(false);
       setIntegrityProgress(null);
     }
-  }, [isScanningIntegrity]);
+  }, [isScanningIntegrity, prepareFolderRead, readDeviceAudio]);
 
   // Apply one-click or manual Audio Integrity metadata fixes (duration & detected container format)
   const handleRepairTrackMetadata = useCallback(
@@ -2208,11 +2327,10 @@ export default function App() {
     [pushToast, addFolderMappingTombstone]
   );
 
-  /** Whether this device has the audio of a song, in memory or in its cache. */
+  /** The same test for a whole song, the form the Drive merge takes. */
   const holdsAudioOnDevice = useCallback(
-    (track: LocalTrack) =>
-      fileMapRef.current.has(track.fileKey) || storedAudioKeysRef.current.has(track.fileKey),
-    []
+    (track: LocalTrack) => holdsAudioKey(track.fileKey),
+    [holdsAudioKey]
   );
 
   /**
@@ -2391,11 +2509,7 @@ export default function App() {
       }
 
       const resolveCachedKey = (candidate: LocalTrack, existing?: LocalTrack): string => {
-        if (
-          existing &&
-          (fileMapRef.current.has(existing.fileKey) ||
-            storedAudioKeysRef.current.has(existing.fileKey))
-        ) {
+        if (existing && holdsAudioKey(existing.fileKey)) {
           return existing.fileKey;
         }
         return candidate.fileKey;
@@ -2464,8 +2578,7 @@ export default function App() {
 
           if (matched) {
             const keptFileKey = resolveCachedKey(incoming, matched);
-            const isCachedHere =
-              fileMapRef.current.has(keptFileKey) || storedAudioKeysRef.current.has(keptFileKey);
+            const isCachedHere = holdsAudioKey(keptFileKey);
             idRemap.set(incoming.id, matched.id);
             nextById.set(matched.id, {
               ...matched,
@@ -2486,9 +2599,7 @@ export default function App() {
             updatedSongs += 1;
           } else {
             idRemap.set(incoming.id, incoming.id);
-            const isCachedHere =
-              fileMapRef.current.has(incoming.fileKey) ||
-              storedAudioKeysRef.current.has(incoming.fileKey);
+            const isCachedHere = holdsAudioKey(incoming.fileKey);
             nextById.set(incoming.id, {
               ...incoming,
               folderName: mappedLoc?.folderName ?? incoming.folderName,
@@ -2547,9 +2658,7 @@ export default function App() {
             : undefined);
 
         if (matched) {
-          const isCachedHere =
-            fileMapRef.current.has(matched.fileKey) ||
-            storedAudioKeysRef.current.has(matched.fileKey);
+          const isCachedHere = holdsAudioKey(matched.fileKey);
           nextById.set(matched.id, {
             ...matched,
             driveFileId: driveFile.id,
@@ -2566,8 +2675,7 @@ export default function App() {
           updatedSongs += 1;
         } else {
           const stub = buildTrackStubFromDriveAudio(driveFile, effectiveDrivePath);
-          const isCachedHere =
-            fileMapRef.current.has(stub.fileKey) || storedAudioKeysRef.current.has(stub.fileKey);
+          const isCachedHere = holdsAudioKey(stub.fileKey);
           nextById.set(stub.id, {
             ...stub,
             folderName: finalMappedLoc?.folderName ?? stub.folderName,
@@ -2653,7 +2761,7 @@ export default function App() {
 
       return { addedSongs, updatedSongs, playlistCount, syncedTrackIds };
     },
-    [holdsAudioOnDevice, setTracks, setPlaylists]
+    [holdsAudioKey, holdsAudioOnDevice, setTracks, setPlaylists]
   );
 
   const handleLinkUploadedDriveTracks = useCallback(
@@ -2692,9 +2800,13 @@ export default function App() {
       }
       await deleteAudioBlobs(fileKeys);
       const evictedSet = new Set(fileKeys);
+      // A song in the picked folder is still on this device once its stored copy is gone.
+      const inFolder = folderFileKeysRef.current;
       setTracks((prev) =>
         prev.map((t) =>
-          evictedSet.has(t.fileKey) ? { ...t, cachedOnDeviceAt: null } : t
+          evictedSet.has(t.fileKey) && !inFolder.has(t.fileKey)
+            ? { ...t, cachedOnDeviceAt: null }
+            : t
         )
       );
       await refreshDeviceCacheStats();
@@ -2710,12 +2822,18 @@ export default function App() {
   const handleClearAllDeviceCache = useCallback(async () => {
     fileMapRef.current.clear();
     await clearAllAudioBlobs();
-    setTracks((prev) => prev.map((t) => ({ ...t, cachedOnDeviceAt: null })));
+    // The stored copies are gone. A song in the picked folder is still on this device.
+    const inFolder = folderFileKeysRef.current;
+    setTracks((prev) =>
+      prev.map((t) => (inFolder.has(t.fileKey) ? t : { ...t, cachedOnDeviceAt: null }))
+    );
     await refreshDeviceCacheStats();
     pushToast({
       title: 'Device audio cache cleared',
       description:
-        'Songs stored in Google Drive download again when played. Rescan the folder to play the rest.',
+        inFolder.size > 0
+          ? 'Songs in your scanned folder still play from it. Other songs stored in Google Drive download again when played.'
+          : 'Songs stored in Google Drive download again when played. Rescan the folder to play the rest.',
       tone: 'neutral',
     });
   }, [refreshDeviceCacheStats, pushToast]);
@@ -2857,6 +2975,15 @@ export default function App() {
     });
     return map;
   }, [smartPlaylistTracksMap]);
+
+  // The same test as holdsAudioKey, for the views. It reads the sets from state and is made
+  // anew on each render, so a view draws again when a set or the files in memory change.
+  const hasPlayableFile = (fileKey: string) =>
+    hasAudioOnDevice(fileKey, {
+      memory: fileMapRef.current,
+      storedKeys: storedAudioKeys,
+      folderKeys: folderFileKeys,
+    });
 
   const activeSmartPlaylist = useMemo(
     () => smartPlaylists.find((sp) => sp.id === activeSmartPlaylistId) ?? null,
@@ -3139,9 +3266,7 @@ export default function App() {
               integrityProgress={integrityProgress}
               activePlayingTrackId={audioPlayer.state.activeTrackId}
               isAudioPlaying={audioPlayer.state.isPlaying}
-              hasPlayableFile={(fileKey) =>
-                fileMapRef.current.has(fileKey) || storedAudioKeys.has(fileKey)
-              }
+              hasPlayableFile={hasPlayableFile}
               onMountFolder={handleMountFolder}
               onPickFilesFallback={() => filesInputRef.current?.click()}
               onDropTransfer={handleDropTransfer}
@@ -3184,9 +3309,7 @@ export default function App() {
               activePlayingTrackId={audioPlayer.state.activeTrackId}
               isAudioPlaying={audioPlayer.state.isPlaying}
               shuffleMode={audioPlayer.state.shuffleMode}
-              hasPlayableFile={(fileKey) =>
-                fileMapRef.current.has(fileKey) || storedAudioKeys.has(fileKey)
-              }
+              hasPlayableFile={hasPlayableFile}
               onUpdatePlaylist={handleUpdatePlaylist}
               onUpdateSyncRule={handleUpdateSyncRule}
               onReorderTrack={handleReorderTrack}
@@ -3221,9 +3344,7 @@ export default function App() {
               activePlayingTrackId={audioPlayer.state.activeTrackId}
               isAudioPlaying={audioPlayer.state.isPlaying}
               shuffleMode={audioPlayer.state.shuffleMode}
-              hasPlayableFile={(fileKey) =>
-                fileMapRef.current.has(fileKey) || storedAudioKeys.has(fileKey)
-              }
+              hasPlayableFile={hasPlayableFile}
               onEditRules={(sp) => setSmartPlaylistModal({ open: true, editing: sp })}
               onDuplicate={handleDuplicateSmartPlaylist}
               onConvertToStaticPlaylist={handleConvertSmartToStaticPlaylist}
@@ -3290,12 +3411,9 @@ export default function App() {
               trackMap={trackMap}
               storedAudioKeys={storedAudioKeys}
               deviceCacheBytes={deviceCacheBytes}
-              hasPlayableFile={(fileKey) =>
-                fileMapRef.current.has(fileKey) || storedAudioKeys.has(fileKey)
-              }
-              getCachedAudioBlob={async (fileKey) =>
-                fileMapRef.current.get(fileKey) ?? (await loadAudioBlob(fileKey))
-              }
+              hasPlayableFile={hasPlayableFile}
+              readTrackAudio={readDeviceAudio}
+              prepareFolderRead={prepareFolderRead}
               onRenameCurrentDevice={handleRenameCurrentDevice}
               onSaveFolderMapping={handleSaveFolderMapping}
               onUnbindDeviceFromMapping={handleUnbindDeviceFromMapping}
@@ -3315,6 +3433,8 @@ export default function App() {
                 ingestAudioEntries(entries, {
                   folderRootName,
                   isFullFolderScan: false,
+                  // The mapping dialog picks its own folder and saves no handle for it.
+                  audioStaysIn: 'browser-storage',
                   source: 'drive-mapping',
                 })
               }

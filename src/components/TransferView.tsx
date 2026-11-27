@@ -9,6 +9,7 @@ import type {
   SyncDeviceProfile,
   SyncEvent,
 } from '../types/music';
+import type { PrepareFolderRead, ReadTrackAudio } from '../utils/deviceAudio';
 import type { TagReadUpdates } from '../utils/driveTagReader';
 import type { CrateSyncLibraryBackupPayload, DriveFileItem } from '../utils/googleDriveApi';
 import type { ManifestFolderState } from '../utils/folderMappings';
@@ -40,7 +41,8 @@ interface TransferViewProps {
   storedAudioKeys: Set<string>;
   deviceCacheBytes: number;
   hasPlayableFile: (fileKey: string) => boolean;
-  getCachedAudioBlob: (fileKey: string) => Promise<Blob | null>;
+  readTrackAudio: ReadTrackAudio;
+  prepareFolderRead: PrepareFolderRead;
   onRenameCurrentDevice: (newName: string) => void;
   onSaveFolderMapping: (params: {
     driveFolderId: string;
@@ -104,7 +106,8 @@ export function TransferView({
   storedAudioKeys,
   deviceCacheBytes,
   hasPlayableFile,
-  getCachedAudioBlob,
+  readTrackAudio,
+  prepareFolderRead,
   onRenameCurrentDevice,
   onSaveFolderMapping,
   onUnbindDeviceFromMapping,
@@ -215,7 +218,8 @@ export function TransferView({
           storedAudioKeys={storedAudioKeys}
           deviceCacheBytes={deviceCacheBytes}
           hasPlayableFile={hasPlayableFile}
-          getCachedAudioBlob={getCachedAudioBlob}
+          readTrackAudio={readTrackAudio}
+          prepareFolderRead={prepareFolderRead}
           onRenameCurrentDevice={onRenameCurrentDevice}
           onSaveFolderMapping={onSaveFolderMapping}
           onUnbindDeviceFromMapping={onUnbindDeviceFromMapping}
