@@ -85,6 +85,7 @@ The screenshots and the recording show a signed-in account, so they are kept out
 - The form asks for the browser address bar in web screenshots. The privacy page, the terms page, the home page and the two Match YouTube screens have it. The four Push to YouTube screens Google received were taken from inside the page and have none. A new push after the form went out gave the same four screens as whole Chrome windows with the address bar. They and a rebuilt six-screen image sit in the evidence folder's `follow-up/`, ready if Google asks.
 - There is no screenshot of Google's consent screen. Google's window opens outside the tab and closes by itself once access is given. It did so again on that later push, with no click, because the app's Google sign-in was still live.
 - The recording ends on a still screenshot of the playlist on YouTube. It does not show the browser going there.
+- The privacy page changed after the form went out. The screenshot Google received says that CrateSync keeps copies of the audio files you add in the browser's storage. Since commit 26a90d7, later the same day, CrateSync reads a folder picked in Chrome or Edge in place and keeps no copy of its songs, and the public page says so. What CrateSync stores of YouTube API data did not change.
 
 ## If Google grants the quota
 
