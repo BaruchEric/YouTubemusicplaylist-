@@ -119,6 +119,15 @@ describe('scoreCandidate', () => {
     );
   });
 
+  test('a short title that differs only by a leading "the" is likely', () => {
+    const track = song('Wild Boys', 'Duran Duran');
+    const official = video('Duran Duran - The Wild Boys (Official Music Video)', 'Duran Duran');
+    expect(scoreCandidate(track, official)).toBe('likely');
+    expect(scoreCandidate(song('The Chain', 'Fleetwood Mac'), video('Chain', 'Fleetwood Mac - Topic'))).toBe(
+      'likely'
+    );
+  });
+
   test('a song from a live album takes the live video or the studio one', () => {
     const track = makeTrack({
       id: 't1',

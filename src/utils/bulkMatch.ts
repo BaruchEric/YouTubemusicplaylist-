@@ -231,6 +231,15 @@ function sharedWords(a: string, b: string): number {
   return (2 * shared) / (left.length + right.length);
 }
 
+/** "Wild Boys" and "The Wild Boys" are one title. Too short for the shared-word score to say so. */
+function withoutLeadingThe(title: string): string {
+  return title.replace(/^the (?=\S)/, '');
+}
+
+function isCloseTitle(a: string, b: string): boolean {
+  return sharedWords(a, b) >= CLOSE_TITLE_SCORE || withoutLeadingThe(a) === withoutLeadingThe(b);
+}
+
 function sameVersions(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((word, index) => word === b[index]);
 }
@@ -250,7 +259,7 @@ function scoreForms(song: SongForm, candidate: CandidateForm): MatchConfidence |
   for (const reading of candidate.readings) {
     const sameTitle = song.titles.includes(reading.title);
     const closeTitle =
-      !sameTitle && song.titles.some((title) => sharedWords(title, reading.title) >= CLOSE_TITLE_SCORE);
+      !sameTitle && song.titles.some((title) => isCloseTitle(title, reading.title));
     if (!sameTitle && !closeTitle) continue;
 
     if (song.artists.length === 0) {
