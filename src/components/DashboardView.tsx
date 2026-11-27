@@ -661,8 +661,9 @@ export function DashboardView({
             Drop audio files or a music folder here to add them to your library
           </div>
         )}
-        {/* Page Header */}
-        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 pb-5 border-b border-white/[0.08]">
+        {/* Page Header. Its six buttons need about 920px of a page that is at most 1150px
+            wide, so they sit under the title at every width. */}
+        <div className="flex flex-col gap-4 pb-5 border-b border-white/[0.08]">
           <div>
             <h1 className="font-display text-2xl sm:text-[28px] font-semibold tracking-tight text-white">
               Library Dashboard
@@ -988,8 +989,8 @@ export function DashboardView({
         >
           {/* Left (7 cols): Recharts Genre Distribution Pie Chart */}
           {/* Each chart card below holds its place at the height it has with songs in the
-              library, measured at 390px and 1440px wide. */}
-          <ChartBoundary className="lg:col-span-7 min-h-[812px] lg:min-h-[550px]">
+              library, measured at 390px, 768px and 1440px wide. */}
+          <ChartBoundary className="lg:col-span-7 min-h-[812px] md:min-h-[482px] lg:min-h-[550px]">
             <GenreDistributionChart
               tracks={tracks}
               allStats={allStats}
@@ -1172,7 +1173,7 @@ export function DashboardView({
           id="dash-section-global-genres"
           className={sectionHighlightClass('global-genres')}
         >
-          <ChartBoundary className="min-h-[663px] lg:min-h-[459px]">
+          <ChartBoundary className="min-h-[663px] md:min-h-[584px] lg:min-h-[459px]">
             <GlobalGenreDistributionChart
               tracks={tracks}
               allStats={allStats}
@@ -1214,7 +1215,7 @@ export function DashboardView({
           id="dash-section-daily-listening"
           className={sectionHighlightClass('daily-listening')}
         >
-          <ChartBoundary className="min-h-[609px] lg:min-h-[453px]">
+          <ChartBoundary className="min-h-[609px] md:min-h-[576px] lg:min-h-[453px]">
             <DailyListeningChart
               tracks={scopedTracks}
               trackMap={trackMap}
@@ -1234,7 +1235,7 @@ export function DashboardView({
           id="dash-section-weekly-habits"
           className={sectionHighlightClass('weekly-habits')}
         >
-          <ChartBoundary className="min-h-[618px] lg:min-h-[395px]">
+          <ChartBoundary className="min-h-[618px] md:min-h-[494px] lg:min-h-[395px]">
             <WeeklyListeningHabitsChart
               tracks={scopedTracks}
               trackMap={trackMap}
@@ -1254,7 +1255,7 @@ export function DashboardView({
           id="dash-section-listening-heatmap"
           className={sectionHighlightClass('listening-heatmap')}
         >
-          <ChartBoundary className="min-h-[872px] lg:min-h-[602px]">
+          <ChartBoundary className="min-h-[872px] md:min-h-[731px] lg:min-h-[602px]">
             <ListeningActivityHeatmap
               tracks={scopedTracks}
               trackMap={trackMap}
@@ -1310,7 +1311,7 @@ export function DashboardView({
           id="dash-section-tracks-added-trend"
           className={sectionHighlightClass('tracks-added-trend')}
         >
-          <ChartBoundary className="min-h-[662px] lg:min-h-[474px]">
+          <ChartBoundary className="min-h-[662px] md:min-h-[599px] lg:min-h-[474px]">
             <WeeklyTracksAddedChart
               tracks={scopedTracks}
               trackGenreMap={allStats.trackGenreMap}
