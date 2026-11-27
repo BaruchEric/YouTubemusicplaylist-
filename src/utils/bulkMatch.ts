@@ -144,6 +144,11 @@ interface SongForm {
    * tags name nobody.
    */
   artists: string[];
+  /**
+   * A three-word name without its middle word. YouTube lists John Cougar Mellencamp as
+   * "John Mellencamp". A video that names only this is a likely match at best.
+   */
+  shortArtists: string[];
   /** The version words in the title, sorted. */
   versions: string[];
   /** The title's version words plus the album's, sorted. A live album makes every song live. */
@@ -163,6 +168,17 @@ function artistNames(artist: string): string[] {
     if (lead.includes(' ') || lead.length >= MIN_LEAD_ARTIST_LENGTH) names.add(lead);
   }
   return [...names];
+}
+
+function withoutMiddleWord(names: readonly string[]): string[] {
+  return names.flatMap((name) => {
+    const words = name.split(' ');
+    return words.length === 3 ? [`${words[0]} ${words[2]}`] : [];
+  });
+}
+
+function hasTaggedArtist(track: Pick<LocalTrack, 'artist'>): boolean {
+  return !UNKNOWN_ARTISTS.has(track.artist.trim().toLowerCase());
 }
 
 function fileBaseName(fileName: string): string {
@@ -186,7 +202,13 @@ function songForm(track: SongToMatch): SongForm {
   }
   titles.delete('');
   const albumVersions = [...new Set([...versions, ...versionWordsIn(track.album ?? '')])].sort();
-  return { titles: [...titles], artists, versions, albumVersions };
+  return {
+    titles: [...titles],
+    artists,
+    shortArtists: withoutMiddleWord(artists),
+    versions,
+    albumVersions,
+  };
 }
 
 /** One way to read a video title: which words are the song and which name the artist. */
@@ -286,8 +308,9 @@ function scoreForms(song: SongForm, candidate: CandidateForm): MatchConfidence |
       if (sameTitle) best = 'likely';
       continue;
     }
-    if (!namesArtist(reading.artistText, song.artists)) continue;
-    if (sameTitle) return 'exact';
+    const named = namesArtist(reading.artistText, song.artists);
+    if (!named && !namesArtist(reading.artistText, song.shortArtists)) continue;
+    if (sameTitle && named) return 'exact';
     best = 'likely';
   }
   return best;
@@ -466,28 +489,36 @@ export function searchQueryFor(track: Pick<LocalTrack, 'title' | 'artist' | 'fil
   // A title copied from the file name often starts with the track number.
   const fromFileName = track.title.trim() === fileBaseName(track.fileName);
   const title = fromFileName ? track.title.replace(LEADING_NUMBER, '') : track.title;
-  const artist = UNKNOWN_ARTISTS.has(track.artist.trim().toLowerCase()) ? '' : track.artist.trim();
+  const artist = hasTaggedArtist(track) ? track.artist.trim() : '';
   return `${artist} ${title.trim()}`.trim();
 }
 
-/** Songs that sit in a playlist come first, in playlist order: a push needs those. */
+/** A search by title alone costs the same 100 units and seldom finds the song, so it waits. */
+function taggedArtistFirst(tracks: readonly LocalTrack[]): LocalTrack[] {
+  return [...tracks.filter(hasTaggedArtist), ...tracks.filter((track) => !hasTaggedArtist(track))];
+}
+
+/**
+ * Songs that sit in a playlist come first, in playlist order: a push needs those. Within
+ * the playlist songs and within the rest, a song with no tagged artist goes last.
+ */
 export function orderForSearch(
   tracks: readonly LocalTrack[],
   playlists: readonly Pick<Playlist, 'trackIds'>[]
 ): LocalTrack[] {
   const byId = new Map(tracks.map((track) => [track.id, track]));
-  const ordered: LocalTrack[] = [];
+  const listed: LocalTrack[] = [];
   const taken = new Set<string>();
-  const take = (track: LocalTrack | undefined) => {
-    if (!track || taken.has(track.id)) return;
-    taken.add(track.id);
-    ordered.push(track);
-  };
   for (const playlist of playlists) {
-    for (const id of playlist.trackIds) take(byId.get(id));
+    for (const id of playlist.trackIds) {
+      const track = byId.get(id);
+      if (!track || taken.has(track.id)) continue;
+      taken.add(track.id);
+      listed.push(track);
+    }
   }
-  for (const track of tracks) take(track);
-  return ordered;
+  const rest = tracks.filter((track) => !taken.has(track.id));
+  return [...taggedArtistFirst(listed), ...taggedArtistFirst(rest)];
 }
 
 export interface BulkSearchOutcome {

@@ -128,6 +128,16 @@ describe('scoreCandidate', () => {
     );
   });
 
+  test('a video that leaves out the middle of a three-word artist name is likely', () => {
+    const track = song('Jack and Diane', 'John Cougar Mellencamp');
+    expect(scoreCandidate(track, video('John Mellencamp - Jack & Diane', 'John Mellencamp'))).toBe('likely');
+    expect(scoreCandidate(track, video('Jack & Diane', 'John Mellencamp - Topic'))).toBe('likely');
+    // The two words have to stand together, so another John with a Mellencamp cover does not fit.
+    expect(scoreCandidate(track, video('Jack & Diane', 'John Smith sings Mellencamp'))).toBeNull();
+    // A two-word name has no middle to leave out.
+    expect(scoreCandidate(song('Africa', 'Toto Band'), video('Africa', 'Toto - Topic'))).toBeNull();
+  });
+
   test('a karaoke upload is no match when the note sits outside brackets', () => {
     const track = song('Almost Lover', 'A Fine Frenzy');
     const piped = video('Almost Lover - A Fine Frenzy | Karaoke Version | KaraFun', 'KaraFun Karaoke');
@@ -300,6 +310,23 @@ describe('orderForSearch', () => {
     const tracks = [makeTrack({ id: 'a' }), makeTrack({ id: 'b' }), makeTrack({ id: 'c' })];
     const playlists = [makePlaylist({ id: 'p', trackIds: ['c', 'b'] })];
     expect(orderForSearch(tracks, playlists).map((t) => t.id)).toEqual(['c', 'b', 'a']);
+  });
+
+  test('a song with no tagged artist waits behind the songs that have one', () => {
+    // A search by title alone, such as "vocals" or "New Recording", costs 100 units and finds nothing.
+    const tracks = [
+      makeTrack({ id: 'stem', title: 'vocals', artist: 'Unknown Artist' }),
+      makeTrack({ id: 'named', title: 'Africa', artist: 'Toto' }),
+      makeTrack({ id: 'listed', title: 'Again', artist: 'Lenny Kravitz' }),
+      makeTrack({ id: 'listed-nameless', title: 'Demo 3', artist: '' }),
+    ];
+    const playlists = [makePlaylist({ id: 'p', trackIds: ['listed-nameless', 'listed'] })];
+    expect(orderForSearch(tracks, playlists).map((t) => t.id)).toEqual([
+      'listed',
+      'listed-nameless',
+      'named',
+      'stem',
+    ]);
   });
 });
 
