@@ -57,10 +57,16 @@ function canQueryPermission(handle: object): handle is PermissionQueryable {
   return 'queryPermission' in handle && typeof handle.queryPermission === 'function';
 }
 
+interface PermissionRequestable {
+  requestPermission(descriptor: { mode: 'read' }): Promise<PermissionState>;
+}
+
+function canRequestPermission(handle: object): handle is PermissionRequestable {
+  return 'requestPermission' in handle && typeof handle.requestPermission === 'function';
+}
+
 /** Asks the browser, without prompting, whether the app may read this folder. */
-export async function queryFolderPermission(
-  handle: FileSystemDirectoryHandle
-): Promise<FolderPermission> {
+export async function queryFolderPermission(handle: object): Promise<FolderPermission> {
   // A browser without queryPermission never takes access back from a handle it gave.
   if (!canQueryPermission(handle)) return 'granted';
   try {
@@ -70,4 +76,39 @@ export async function queryFolderPermission(
   } catch {
     return 'needs-permission';
   }
+}
+
+/**
+ * Finds out whether the app may read this folder, and asks the user when it may not and
+ * `mayPrompt` is true. A re-scan and a click on Play both come through here, so the watcher
+ * and the player agree on the folder's state.
+ */
+export async function ensureFolderPermission(
+  handle: object,
+  mayPrompt: boolean
+): Promise<FolderPermission> {
+  const current = await queryFolderPermission(handle);
+  if (current === 'granted' || !mayPrompt || !canRequestPermission(handle)) return current;
+  try {
+    return (await handle.requestPermission({ mode: 'read' })) === 'granted'
+      ? 'granted'
+      : 'needs-permission';
+  } catch {
+    // The browser throws when no click or key press is behind the request.
+    return 'needs-permission';
+  }
+}
+
+/** The part of `navigator` that says whether a click is fresh. Older browsers lack it. */
+type ClickReporter = Partial<Pick<Navigator, 'userActivation'>>;
+
+/**
+ * True while the browser counts a click or key press as just made. The browser shows the
+ * folder permission prompt only then, so a song that starts by itself never asks.
+ */
+export function hasUserGesture(
+  browser: ClickReporter | undefined = typeof navigator === 'undefined' ? undefined : navigator
+): boolean {
+  // A browser too old for userActivation has no folder handles to ask about either.
+  return browser?.userActivation?.isActive === true;
 }

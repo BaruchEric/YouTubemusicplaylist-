@@ -50,7 +50,7 @@ function sharedParentFolders(a: string, b: string): number {
 
 /**
  * Builds the matcher for one scan. `hasAudioOnDevice` says whether this device holds the
- * audio for a song's key, in memory or in the browser's storage.
+ * audio for a song's key: in memory, in the browser's storage or in the picked folder.
  */
 export function createScanMatcher(
   tracks: readonly LocalTrack[],

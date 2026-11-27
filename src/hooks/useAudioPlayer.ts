@@ -10,7 +10,8 @@ import {
   buildStandardShuffleOrder,
   type ShuffleMode,
 } from '../utils/smartShuffle';
-import { loadAudioBlob, saveAudioBlob } from '../utils/storage';
+import { saveAudioBlob } from '../utils/storage';
+import type { PrepareFolderRead, ReadTrackAudio } from '../utils/deviceAudio';
 import { clearDriveAccessToken, getDriveAccessToken } from '../utils/googleAuth';
 import { downloadDriveAudioBlob, DriveApiError, inferAudioMimeFromName } from '../utils/googleDriveApi';
 import {
@@ -193,7 +194,7 @@ function readSavedPlayHistory(): PlayHistoryEntry[] {
 export function useAudioPlayer(
   tracks: LocalTrack[],
   fileMapRef: React.MutableRefObject<Map<string, Blob>>,
-  options?: {
+  options: {
     onPlayRecorded?: (event: {
       trackId: string;
       outcome: PlayEventOutcome;
@@ -205,8 +206,15 @@ export function useAudioPlayer(
       fileKey: string;
       blob: Blob;
     }) => void;
-    /** True when the audio for this fileKey is persisted in the IndexedDB device cache */
-    hasCachedAudio?: (fileKey: string) => boolean;
+    /**
+     * True when this device holds the audio for a file key: in memory, in the browser's
+     * storage or in the folder the user picked.
+     */
+    hasAudioOnDevice: (fileKey: string) => boolean;
+    /** Reads a song's bytes from this device: memory, then the stored copy, then the folder. */
+    readAudio: ReadTrackAudio;
+    /** Asks for the picked folder once, at the click that starts a scan of many songs. */
+    prepareFolderRead: PrepareFolderRead;
   }
 ) {
   // Dual-deck HTML5 Audio elements for seamless overlapping crossfades
@@ -239,25 +247,29 @@ export function useAudioPlayer(
   const loadSeqRef = useRef<number>(0);
   const baseQueueIdsRef = useRef<string[]>([]);
   const playbackSessionRef = useRef<ActivePlaybackSession | null>(null);
-  const onPlayRecordedRef = useRef(options?.onPlayRecorded);
+  const onPlayRecordedRef = useRef(options.onPlayRecorded);
   useEffect(() => {
-    onPlayRecordedRef.current = options?.onPlayRecorded;
-  }, [options?.onPlayRecorded]);
-  const onTrackCachedFromDriveRef = useRef(options?.onTrackCachedFromDrive);
+    onPlayRecordedRef.current = options.onPlayRecorded;
+  }, [options.onPlayRecorded]);
+  const onTrackCachedFromDriveRef = useRef(options.onTrackCachedFromDrive);
   useEffect(() => {
-    onTrackCachedFromDriveRef.current = options?.onTrackCachedFromDrive;
-  }, [options?.onTrackCachedFromDrive]);
-  const hasCachedAudioRef = useRef(options?.hasCachedAudio);
+    onTrackCachedFromDriveRef.current = options.onTrackCachedFromDrive;
+  }, [options.onTrackCachedFromDrive]);
+  const hasAudioOnDeviceRef = useRef(options.hasAudioOnDevice);
   useEffect(() => {
-    hasCachedAudioRef.current = options?.hasCachedAudio;
-  }, [options?.hasCachedAudio]);
+    hasAudioOnDeviceRef.current = options.hasAudioOnDevice;
+  }, [options.hasAudioOnDevice]);
+  const readAudioRef = useRef(options.readAudio);
+  useEffect(() => {
+    readAudioRef.current = options.readAudio;
+  }, [options.readAudio]);
+  const prepareFolderReadRef = useRef(options.prepareFolderRead);
+  useEffect(() => {
+    prepareFolderReadRef.current = options.prepareFolderRead;
+  }, [options.prepareFolderRead]);
 
-  // fileMapRef only holds blobs touched this session; after a reload the audio lives in IndexedDB
-  const hasLocalAudio = useCallback(
-    (fileKey: string) =>
-      fileMapRef.current.has(fileKey) || Boolean(hasCachedAudioRef.current?.(fileKey)),
-    [fileMapRef]
-  );
+  // The app owns the answer, so the player and every view agree on what is on this device.
+  const hasLocalAudio = useCallback((fileKey: string) => hasAudioOnDeviceRef.current(fileKey), []);
 
   const [playStats, setPlayStats] = useState<Record<string, TrackPlayStats>>(() =>
     readSavedPlayStats()
@@ -563,10 +575,8 @@ export function useAudioPlayer(
       }
 
       try {
-        let blob = preloadedBlob ?? fileMapRef.current.get(track.fileKey) ?? null;
-        if (!blob) {
-          blob = await loadAudioBlob(track.fileKey);
-        }
+        // This read never asks for the folder. A library scan asks once, before its first song.
+        const blob = preloadedBlob ?? (await readAudioRef.current(track));
         if (!blob) return null;
 
         const data = await analyzeAudioBlobLoudness(blob, track.album, audioCtxRef.current);
@@ -592,7 +602,7 @@ export function useAudioPlayer(
         }
       }
     },
-    [fileMapRef]
+    []
   );
 
   // Re-apply ReplayGain smoothly whenever settings or loudness measurements update
@@ -781,16 +791,11 @@ export function useAudioPlayer(
 
       preloadingTrackIdRef.current = trackId;
       try {
-        let blob: Blob | null = fileMapRef.current.get(track.fileKey) ?? null;
-        if (!blob) {
-          blob = await loadAudioBlob(track.fileKey);
-          if (blob) {
-            fileMapRef.current.set(track.fileKey, blob);
-          }
-        }
+        // A preload is the player's own idea, so it never asks for folder access.
+        const blob = await readAudioRef.current(track, 'never-ask');
         if (!blob) return;
 
-        // Abort if crossfade started or another preload superseded this one while reading IndexedDB
+        // Abort if crossfade started or another preload superseded this one while reading the audio
         if (
           !stateRef.current.gaplessPlayback ||
           crossfadeSessionRef.current ||
@@ -827,7 +832,7 @@ export function useAudioPlayer(
         }
       }
     },
-    [fileMapRef, clearDeck]
+    [clearDeck]
   );
 
   /**
@@ -927,14 +932,14 @@ export function useAudioPlayer(
         preloadedDeckRef.current.deckIdx !== activeDeckIdxRef.current &&
         Boolean(deckUrlsRef.current[preloadedDeckRef.current.deckIdx]);
 
-      // 1. Look up live Blob in memory first, then fall back to IndexedDB persisted audio cache
+      // 1. Take the Blob held in memory, or read it: the stored copy first, then the picked
+      // folder. A click on Play may bring up the browser's prompt for folder access. A song
+      // that starts by itself has no click behind it, so it gets no prompt and moves on to
+      // the next source below.
       let blob: Blob | null = fileMapRef.current.get(track.fileKey) ?? null;
       if (!blob && !preloadedMatch) {
-        blob = await loadAudioBlob(track.fileKey);
+        blob = await readAudioRef.current(track, 'may-ask');
         if (seq !== loadSeqRef.current) return; // Superseded by another play click
-        if (blob) {
-          fileMapRef.current.set(track.fileKey, blob);
-        }
       }
 
       // 1b. Source-of-truth Google Drive on-demand fetch & offline device cache
@@ -1730,6 +1735,7 @@ export function useAudioPlayer(
     if (pendingTracks.length === 0) return;
 
     setLoudnessScanProgress({ processed: 0, total: pendingTracks.length });
+    await prepareFolderReadRef.current(pendingTracks);
 
     let processed = 0;
     for (const track of pendingTracks) {

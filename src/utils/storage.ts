@@ -19,6 +19,10 @@ const STORES = {
   BLOBS: 'audio_blobs',
 } as const;
 
+/** Keys in the dir_handles store: the picked folder, and the songs the last scan saw in it. */
+const WATCHED_ROOT_KEY = 'watched_root';
+const WATCHED_ROOT_FILES_KEY = 'watched_root_files';
+
 export interface PersistedLibraryState {
   tracks: LocalTrack[];
   playlists: Playlist[];
@@ -182,22 +186,26 @@ export async function listStoredAudioKeys(): Promise<Set<string>> {
   }
 }
 
-export async function deleteAudioBlobs(fileKeys: string[]): Promise<void> {
-  if (fileKeys.length === 0) return;
+/**
+ * Deletes stored copies by file key. Resolves true once every one of them is gone and false
+ * when the browser deleted none, so a caller can say how much it freed without guessing.
+ */
+export async function deleteAudioBlobs(fileKeys: string[]): Promise<boolean> {
+  if (fileKeys.length === 0) return true;
   try {
     const db = await openDB();
-    await new Promise<void>((resolve) => {
+    return await new Promise<boolean>((resolve) => {
       const tx = db.transaction(STORES.BLOBS, 'readwrite');
       const store = tx.objectStore(STORES.BLOBS);
       for (const key of fileKeys) {
         store.delete(key);
       }
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
-      tx.onabort = () => resolve();
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+      tx.onabort = () => resolve(false);
     });
   } catch {
-    // Ignore
+    return false;
   }
 }
 
@@ -262,9 +270,9 @@ export async function saveDirectoryHandle(
     await new Promise<void>((resolve) => {
       const tx = db.transaction(STORES.HANDLES, 'readwrite');
       if (handle) {
-        tx.objectStore(STORES.HANDLES).put(handle, 'watched_root');
+        tx.objectStore(STORES.HANDLES).put(handle, WATCHED_ROOT_KEY);
       } else {
-        tx.objectStore(STORES.HANDLES).delete('watched_root');
+        tx.objectStore(STORES.HANDLES).delete(WATCHED_ROOT_KEY);
       }
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
@@ -275,12 +283,50 @@ export async function saveDirectoryHandle(
   }
 }
 
+/**
+ * Saves the file keys of the songs the last scan saw in the picked folder. Those songs play
+ * from the folder, so the answer must outlive a reload. Says false when the save failed, and
+ * the scan then keeps the stored copies it would have freed.
+ */
+export async function saveFolderFileKeys(fileKeys: ReadonlySet<string>): Promise<boolean> {
+  try {
+    const db = await openDB();
+    return await new Promise<boolean>((resolve) => {
+      const tx = db.transaction(STORES.HANDLES, 'readwrite');
+      tx.objectStore(STORES.HANDLES).put([...fileKeys], WATCHED_ROOT_FILES_KEY);
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+      tx.onabort = () => resolve(false);
+    });
+  } catch {
+    return false;
+  }
+}
+
+export async function loadFolderFileKeys(): Promise<Set<string>> {
+  try {
+    const db = await openDB();
+    return await new Promise<Set<string>>((resolve) => {
+      const tx = db.transaction(STORES.HANDLES, 'readonly');
+      const req = tx.objectStore(STORES.HANDLES).get(WATCHED_ROOT_FILES_KEY);
+      req.onsuccess = () => {
+        const saved: unknown = req.result;
+        const keys = Array.isArray(saved) ? saved : [];
+        resolve(new Set(keys.filter((key): key is string => typeof key === 'string')));
+      };
+      req.onerror = () => resolve(new Set());
+    });
+  } catch {
+    return new Set();
+  }
+}
+
 export async function loadDirectoryHandle(): Promise<FileSystemDirectoryHandle | null> {
   try {
     const db = await openDB();
     return await new Promise<FileSystemDirectoryHandle | null>((resolve) => {
       const tx = db.transaction(STORES.HANDLES, 'readonly');
-      const req = tx.objectStore(STORES.HANDLES).get('watched_root');
+      const req = tx.objectStore(STORES.HANDLES).get(WATCHED_ROOT_KEY);
       req.onsuccess = () => resolve((req.result as FileSystemDirectoryHandle) ?? null);
       req.onerror = () => resolve(null);
     });

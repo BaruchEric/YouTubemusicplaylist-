@@ -1,6 +1,30 @@
 /// <reference types="bun" />
 import { describe, expect, test } from 'bun:test';
-import { parseWatchInterval, resolveWatcherStatus } from '../src/utils/folderWatch';
+import {
+  ensureFolderPermission,
+  hasUserGesture,
+  parseWatchInterval,
+  resolveWatcherStatus,
+} from '../src/utils/folderWatch';
+
+describe('hasUserGesture', () => {
+  test('is true while the browser counts a click as fresh', () => {
+    const fresh = { userActivation: { isActive: true, hasBeenActive: true } };
+
+    expect(hasUserGesture(fresh)).toBe(true);
+  });
+
+  test('is false once the click has gone stale', () => {
+    const stale = { userActivation: { isActive: false, hasBeenActive: true } };
+
+    expect(hasUserGesture(stale)).toBe(false);
+  });
+
+  test('is false in a browser that does not report clicks', () => {
+    expect(hasUserGesture({})).toBe(false);
+    expect(hasUserGesture(undefined)).toBe(false);
+  });
+});
 
 describe('parseWatchInterval', () => {
   test('reads a saved interval back', () => {
@@ -39,5 +63,64 @@ describe('resolveWatcherStatus', () => {
 
   test('says syncing while a scan runs', () => {
     expect(resolveWatcherStatus({ ...watching, isScanning: true })).toBe('syncing');
+  });
+});
+
+describe('ensureFolderPermission', () => {
+  /** A folder handle whose permission starts at `state` and becomes `answer` once the user is asked. */
+  function folder(state: PermissionState, answer: PermissionState = state) {
+    let current = state;
+    let prompts = 0;
+    return {
+      queryPermission: async () => current,
+      requestPermission: async () => {
+        prompts += 1;
+        current = answer;
+        return current;
+      },
+      prompts: () => prompts,
+    };
+  }
+
+  test('reads a folder the browser already allows, without a prompt', async () => {
+    const handle = folder('granted');
+
+    expect(await ensureFolderPermission(handle, true)).toBe('granted');
+    expect(handle.prompts()).toBe(0);
+  });
+
+  test('does not prompt when the caller has no click to show for it', async () => {
+    const handle = folder('prompt', 'granted');
+
+    expect(await ensureFolderPermission(handle, false)).toBe('needs-permission');
+    expect(handle.prompts()).toBe(0);
+  });
+
+  test('prompts on a click and reads the folder once the user allows it', async () => {
+    const handle = folder('prompt', 'granted');
+
+    expect(await ensureFolderPermission(handle, true)).toBe('granted');
+    expect(handle.prompts()).toBe(1);
+  });
+
+  test('stays without access when the user says no', async () => {
+    const handle = folder('prompt', 'denied');
+
+    expect(await ensureFolderPermission(handle, true)).toBe('needs-permission');
+  });
+
+  test('stays without access when the browser refuses to show the prompt', async () => {
+    const handle = {
+      queryPermission: async (): Promise<PermissionState> => 'prompt',
+      requestPermission: async (): Promise<PermissionState> => {
+        throw new DOMException('User activation is required', 'SecurityError');
+      },
+    };
+
+    expect(await ensureFolderPermission(handle, true)).toBe('needs-permission');
+  });
+
+  test('trusts a handle from a browser that never takes access back', async () => {
+    expect(await ensureFolderPermission({}, false)).toBe('granted');
   });
 });
