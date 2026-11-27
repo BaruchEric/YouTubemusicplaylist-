@@ -6,6 +6,7 @@ flowchart TD
     confirm{"User clicks<br/>Connect YouTube and push?"}
     cancel(["Nothing is sent"])
     consent["Google's window: the user picks an account<br/>and allows the youtube scope"]
+    check["Check that videos saved over 30 days ago<br/>still exist, and unmatch the ones that do not<br/>videos.list"]
     linked{"Playlist already linked<br/>to a YouTube playlist?"}
     create["Create a private playlist<br/>playlists.insert"]
     read["Read its entries: ID, video ID, position<br/>playlistItems.list"]
@@ -18,7 +19,7 @@ flowchart TD
 
     opened --> press --> review --> confirm
     confirm -->|"no, Cancel"| cancel
-    confirm -->|yes| consent --> linked
+    confirm -->|yes| consent --> check --> linked
     linked -->|no| create --> add
     linked -->|yes| read --> add
     add --> remove --> move --> quota

@@ -1,0 +1,32 @@
+%%{init: {'theme':'neutral', 'flowchart': {'wrappingWidth': 460}}}%%
+flowchart TD
+    opened(["User opens Device Storage in CrateSync"])
+    press["User clicks Match YouTube"]
+    choose{"Where do the videos come from?"}
+    count["User picks how many songs to search.<br/>The window shows the quota cost<br/>and links the terms and the privacy policy"]
+    link["User pastes a YouTube playlist link"]
+    paste["User pastes lines of titles and links,<br/>or picks a file"]
+    consent["Google's window: the user picks an account<br/>and allows the youtube scope"]
+    check["Check that videos saved over 30 days ago<br/>still exist, and unmatch the ones that do not<br/>videos.list"]
+    search["Search YouTube for each song's artist and title,<br/>up to five music videos a song<br/>search.list"]
+    read["Read the playlist's videos:<br/>ID, title, channel, position<br/>playlistItems.list"]
+    quota{"Daily quota reached<br/>or Stop clicked?"}
+    partial["The search stops and keeps<br/>what it found so far"]
+    score["CrateSync compares titles and artists<br/>and marks each match Exact or Likely"]
+    review["Review window lists each song next to its video,<br/>with a link to YouTube Music.<br/>Exact matches are ticked"]
+    apply{"User clicks Apply?"}
+    nothing(["Nothing is saved"])
+    saved(["CrateSync saves the video ID of each ticked match.<br/>Titles and channel names are dropped.<br/>A push can now send those songs"])
+
+    opened --> press --> choose
+    choose -->|"Search YouTube"| count --> consent
+    choose -->|"A YouTube playlist"| link --> consent
+    choose -->|"A list of links"| paste --> score
+    consent --> check
+    check -->|"search"| search --> quota
+    check -->|"playlist"| read --> score
+    quota -->|yes| partial --> score
+    quota -->|no| score
+    score --> review --> apply
+    apply -->|"no, Back or Close"| nothing
+    apply -->|yes| saved

@@ -8,6 +8,7 @@ It runs at https://music.beric.ca ([`docs/DEPLOY.md`](docs/DEPLOY.md)).
 
 ### Local Library Scanning & Maintenance
 - **Folder & File Ingestion**: Mount local directories via the File System Access API (`showDirectoryPicker`) in top-level Chromium contexts with automatic `webkitdirectory` and drag-and-drop fallbacks. Supports background auto-watch intervals (`Off`, `30s`, `2m`, `5m`) and missing-file detection. The interval is one setting for the whole app and is saved in the browser. After a reload the browser withholds folder access until a click, so the watcher shows `Paused` until you click it or press Re-scan.
+- **Drive songs and their local files**: A song listed from Google Drive has no local file at first. When a folder scan finds a file with the same name and byte size, that file is the song's local copy: the song takes the file's path and no second entry appears. The scan notice counts the songs it linked.
 - **Native Binary Metadata Parsing**: Extracts title, artist, album, genre, year, track number, duration, and compressed `160x160` JPEG album artwork directly in the browser from ID3v2, ID3v1, FLAC Vorbis comments, and MP4/M4A atoms, with path-based inference fallback.
 - **Supported Audio Formats**: `.mp3`, `.m4a`, `.m4b`, `.m4p`, `.mp4`, `.flac`, `.wav`, `.ogg`, `.oga`, `.opus`, `.aac`, `.wma`, `.aiff`, `.aif`, `.aifc`, `.alac`, `.caf`, `.3gp`, `.amr`, `.webm`.
 - **SHA-256 Duplicate Finder**: Detects exact file duplicates via `fileSize` + SHA-256 content hash (with a size-only fallback for unhashed files), recommends the best canonical copy to keep, and remaps playlist references cleanly on removal.
@@ -16,8 +17,15 @@ It runs at https://music.beric.ca ([`docs/DEPLOY.md`](docs/DEPLOY.md)).
 
 ### YouTube Music Matching & Playlist Sync
 - **Track Matching**: Link local tracks to 11-character YouTube / YouTube Music video IDs via URL or ID paste, with pre-filled YouTube Music search links for unmatched tracks.
+- **Match YouTube**: The button on Device Storage finds the video for many songs at once, for the whole library or for the rows you ticked. It takes videos from one of three places, and you review every match before it is saved.
+  - **Search YouTube** asks YouTube for each song's artist and title and proposes the result that fits. One search costs 100 quota units, so a day covers 100 songs at most. You pick how many to search, songs in a playlist go first, and a song searched in the last 30 days is left out because YouTube would give the same answer.
+  - **A YouTube playlist** reads a playlist you paste the link of and matches its videos to your songs. Your liked songs are the playlist at `music.youtube.com/playlist?list=LM`. Reading costs 1 unit for every 50 videos.
+  - **A list of links** matches pasted lines such as `Artist - Title https://music.youtube.com/watch?v=...`, or a CSV, M3U or JSON file. It needs no connection to YouTube.
+  - A match is **Exact** when the title is the same and the video's title or channel names the artist. It is **Likely** when the title is close or the song has no artist to check. Exact matches come ticked and likely ones do not. A live, remix, acoustic, karaoke or cover video fits only a song whose title or album says the same.
+  - Of what YouTube returns, CrateSync keeps the video ID of each match you apply. Titles and channel names are shown for the review and then dropped.
+  - A saved match is checked again after 30 days, which YouTube's API policy asks for. At the start of a push or of a search or playlist read, CrateSync asks YouTube whether the videos saved more than 30 days ago still exist, at 1 quota unit for every 50. A song whose video is gone becomes unmatched again and a notice says how many did.
 - **Push to YouTube**: The button on a playlist creates a private playlist on your YouTube account, which YouTube Music shows too, and adds every matched song. Later pushes send only the difference: a new song goes in at its place in the playlist, a song that is out of place is moved, and a song comes off YouTube only when an earlier push put it there and it has since left the playlist. Songs you added on YouTube yourself stay and are never moved. The songs YouTube holds after a push read In sync in the playlist. Paste a playlist link under Edit details to send to a playlist you already have. The first push opens Google's window and asks for the YouTube scope (`https://www.googleapis.com/auth/youtube`). The token stays in memory and lasts under an hour. Google shows "Google hasn't verified this app" first, and Advanced leads on to the consent page. The playlist is private, so its link opens only in the Google account that owns it.
-  - YouTube gives the app's Google Cloud project 10,000 quota units a day, and adding, moving or removing a song costs 50, so a day holds about 200 changes. A bigger push stops at the limit and the next push carries on from there.
+  - YouTube gives the app's Google Cloud project 10,000 quota units a day, and adding, moving or removing a song costs 50, so a day holds about 200 changes. A bigger push stops at the limit and the next push carries on from there. Searches from Match YouTube draw on the same allowance.
   - Songs are added and removed before any song is moved, so a push that hits the limit has the right songs first and the right order later. The fewest songs that put the playlist in order are moved.
   - A YouTube playlist that YouTube sorts by date or popularity cannot take an order. The push says so and leaves the order alone until you set that playlist to manual order on YouTube.
   - Unmatched songs stay behind until you match them.
@@ -157,12 +165,12 @@ Classifies tracks into canonical primary genres and subgenres.
 │   ├── ARCHITECTURE.md          # Detailed data model, sync protocol & module reference
 │   ├── DEPLOY.md                # How the app is deployed and what makes the hostname work
 │   ├── YOUTUBE_AUDIT.md         # What Google was told on the YouTube quota form
-│   ├── diagrams/                # Architecture and push flow diagrams, Mermaid source and PNG
+│   ├── diagrams/                # Architecture and user flow diagrams, Mermaid source and PNG
 │   └── privacy.html, terms.html # Public pages, served by GitHub Pages with index.html and site.css
 └── src/
     ├── App.tsx                  # Root workspace state, ingestion, sync & view routing
     ├── types/music.ts           # Core domain types
-    ├── hooks/                   # Audio player engine & toast notifications
+    ├── hooks/                   # Audio player engine, toast notifications & the bulk match window
     ├── utils/                   # Metadata, Drive API, sync, search, ReplayGain & integrity
     └── components/              # Views, charts, player UI, Drive browsers & modals
 ```

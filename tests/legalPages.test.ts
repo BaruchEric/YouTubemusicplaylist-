@@ -44,6 +44,15 @@ describe('the public pages', () => {
     expect(privacy).toContain('href="mailto:cratesync@beric.ca"');
   });
 
+  test('the privacy policy says what a search sends to YouTube and what is kept', () => {
+    expect(privacy).toContain("sends the song's artist and title to");
+    expect(privacy).toContain('It does not save the titles or the channel names.');
+  });
+
+  test('the privacy policy says a saved video ID is checked again after 30 days', () => {
+    expect(privacy).toContain('A saved video ID is checked again after 30 days.');
+  });
+
   test('the terms bind the user to the YouTube Terms of Service', () => {
     expect(terms).toContain('YouTube API Services');
     expect(terms).toContain(`href="${YOUTUBE_TERMS_URL}"`);

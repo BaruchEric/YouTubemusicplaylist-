@@ -12,7 +12,7 @@ flowchart LR
     subgraph google ["Google services"]
         direction TB
         auth["Firebase Authentication<br/>Google sign-in and consent window"]
-        yt["YouTube Data API v3<br/>playlists.insert<br/>playlistItems.list, insert, update, delete"]
+        yt["YouTube Data API v3<br/>playlists.insert<br/>playlistItems.list, insert, update, delete<br/>search.list, videos.list"]
         drive["Google Drive API v3<br/>optional copy of the library"]
     end
 
@@ -24,11 +24,11 @@ flowchart LR
 
     gemini["Gemini API at Google<br/>optional song tag lookups"]
 
-    user -->|"builds a playlist,<br/>clicks Push to YouTube"| app
+    user -->|"matches songs to videos,<br/>builds a playlist,<br/>clicks Push to YouTube"| app
     app -->|"saves the library"| store
     auth -->|"access token"| tokens
     app -->|"asks for the youtube scope<br/>when the user clicks"| auth
-    app ==>|"HTTPS with the user's token:<br/>create a private playlist, read its entries,<br/>add, move and remove videos"| yt
+    app ==>|"HTTPS with the user's token:<br/>search for a song's video, read a playlist,<br/>check that saved videos still exist,<br/>create a private playlist,<br/>add, move and remove videos"| yt
     app -.->|"optional: library file and audio"| drive
     gate -->|"app files"| app
     gate --- server

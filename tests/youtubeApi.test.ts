@@ -203,6 +203,188 @@ describe('listPlaylistItems', () => {
   });
 });
 
+describe('listPlaylistVideos', () => {
+  test('returns each video with its title and channel, in playlist order', async () => {
+    const { fetch, calls } = fakeFetch([
+      {
+        status: 200,
+        body: {
+          nextPageToken: 'page-2',
+          items: [
+            {
+              snippet: { title: 'Second', videoOwnerChannelTitle: 'B - Topic', position: 1 },
+              contentDetails: { videoId: 'vid-2' },
+            },
+            {
+              snippet: { title: 'First', videoOwnerChannelTitle: 'A - Topic', position: 0 },
+              contentDetails: { videoId: 'vid-1' },
+            },
+          ],
+        },
+      },
+      {
+        status: 200,
+        body: {
+          items: [
+            {
+              snippet: { title: 'Third', videoOwnerChannelTitle: 'C', position: 2 },
+              contentDetails: { videoId: 'vid-3' },
+            },
+          ],
+        },
+      },
+    ]);
+
+    const videos = await createYouTubeApi('t', fetch).listPlaylistVideos('PL-1');
+
+    expect(videos).toEqual([
+      { videoId: 'vid-1', title: 'First', channel: 'A - Topic' },
+      { videoId: 'vid-2', title: 'Second', channel: 'B - Topic' },
+      { videoId: 'vid-3', title: 'Third', channel: 'C' },
+    ]);
+    expect(calls[0].url.pathname.endsWith('/playlistItems')).toBe(true);
+    expect(calls[0].url.searchParams.get('playlistId')).toBe('PL-1');
+    expect(calls[1].url.searchParams.get('pageToken')).toBe('page-2');
+  });
+
+  test('leaves out deleted and private videos, which carry no channel', async () => {
+    const { fetch } = fakeFetch([
+      {
+        status: 200,
+        body: {
+          items: [
+            { snippet: { title: 'Deleted video', position: 0 }, contentDetails: { videoId: 'vid-1' } },
+            { snippet: { title: 'Private video', position: 1 }, contentDetails: { videoId: 'vid-2' } },
+            {
+              snippet: { title: 'Kept', videoOwnerChannelTitle: 'A', position: 2 },
+              contentDetails: { videoId: 'vid-3' },
+            },
+          ],
+        },
+      },
+    ]);
+
+    const videos = await createYouTubeApi('t', fetch).listPlaylistVideos('PL-1');
+
+    expect(videos).toEqual([{ videoId: 'vid-3', title: 'Kept', channel: 'A' }]);
+  });
+});
+
+describe('searchVideos', () => {
+  test('asks for music videos and returns them best first', async () => {
+    const { fetch, calls } = fakeFetch([
+      {
+        status: 200,
+        body: {
+          items: [
+            { id: { videoId: 'vid-1' }, snippet: { title: 'Fireflies', channelTitle: 'Owl City - Topic' } },
+            { id: { videoId: 'vid-2' }, snippet: { title: 'Owl City - Fireflies', channelTitle: 'OwlCityVEVO' } },
+          ],
+        },
+      },
+    ]);
+
+    const videos = await createYouTubeApi('t', fetch).searchVideos('Owl City Fireflies');
+
+    expect(videos).toEqual([
+      { videoId: 'vid-1', title: 'Fireflies', channel: 'Owl City - Topic' },
+      { videoId: 'vid-2', title: 'Owl City - Fireflies', channel: 'OwlCityVEVO' },
+    ]);
+    const { url, method } = calls[0];
+    expect(method).toBe('GET');
+    expect(url.pathname.endsWith('/search')).toBe(true);
+    expect(url.searchParams.get('q')).toBe('Owl City Fireflies');
+    expect(url.searchParams.get('type')).toBe('video');
+    expect(url.searchParams.get('videoCategoryId')).toBe('10');
+    expect(url.searchParams.get('maxResults')).toBe('5');
+  });
+
+  test('turns the HTML entities in a search title back into characters', async () => {
+    const { fetch } = fakeFetch([
+      {
+        status: 200,
+        body: {
+          items: [
+            {
+              id: { videoId: 'vid-1' },
+              snippet: { title: 'Guns N&#39; Roses - Sweet Child O&#39; Mine &amp; More &quot;Live&quot;', channelTitle: 'Guns N&#39; Roses' },
+            },
+          ],
+        },
+      },
+    ]);
+
+    const [video] = await createYouTubeApi('t', fetch).searchVideos('x');
+
+    expect(video?.title).toBe('Guns N\' Roses - Sweet Child O\' Mine & More "Live"');
+    expect(video?.channel).toBe("Guns N' Roses");
+  });
+
+  test('leaves out results without a video id', async () => {
+    const { fetch } = fakeFetch([
+      { status: 200, body: { items: [{ id: {}, snippet: { title: 'A channel', channelTitle: 'X' } }] } },
+    ]);
+
+    expect(await createYouTubeApi('t', fetch).searchVideos('x')).toEqual([]);
+  });
+
+  test('reports a used-up allowance as a quota failure', async () => {
+    const { fetch } = fakeFetch([googleError(403, 'quotaExceeded')]);
+
+    const attempt = createYouTubeApi('t', fetch).searchVideos('x');
+
+    await expect(attempt).rejects.toMatchObject({ failure: 'quota' });
+  });
+});
+
+describe('listExistingVideoIds', () => {
+  test('returns the ids YouTube still has and leaves out the ones it lost', async () => {
+    const { fetch, calls } = fakeFetch([
+      { status: 200, body: { items: [{ id: 'vid-1' }, { id: 'vid-3' }] } },
+    ]);
+
+    const existing = await createYouTubeApi('t', fetch).listExistingVideoIds([
+      'vid-1',
+      'vid-2',
+      'vid-3',
+    ]);
+
+    expect([...existing].sort()).toEqual(['vid-1', 'vid-3']);
+    const { url, method } = calls[0];
+    expect(method).toBe('GET');
+    expect(url.pathname.endsWith('/videos')).toBe(true);
+    expect(url.searchParams.get('part')).toBe('id');
+    expect(url.searchParams.get('id')).toBe('vid-1,vid-2,vid-3');
+    expect(url.searchParams.get('fields')).toBe('items(id)');
+  });
+
+  test('asks for 50 ids at a time and each id once', async () => {
+    const ids = Array.from({ length: 120 }, (_, index) => `vid-${index}`);
+    const { fetch, calls } = fakeFetch([
+      { status: 200, body: { items: ids.slice(0, 50).map((id) => ({ id })) } },
+      { status: 200, body: { items: [] } },
+      { status: 200, body: { items: ids.slice(100).map((id) => ({ id })) } },
+    ]);
+
+    const existing = await createYouTubeApi('t', fetch).listExistingVideoIds([...ids, 'vid-0']);
+
+    expect(calls).toHaveLength(3);
+    expect(calls[0].url.searchParams.get('id')?.split(',')).toHaveLength(50);
+    expect(calls[2].url.searchParams.get('id')?.split(',')).toHaveLength(20);
+    expect(existing.size).toBe(70);
+    expect(existing.has('vid-60')).toBe(false);
+  });
+
+  test('makes no call for an empty list', async () => {
+    const { fetch, calls } = fakeFetch([]);
+
+    const existing = await createYouTubeApi('t', fetch).listExistingVideoIds([]);
+
+    expect(existing.size).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe('insertPlaylistItem and deletePlaylistItem', () => {
   test('adds one video to the playlist', async () => {
     const { fetch, calls } = fakeFetch([{ status: 200, body: { id: 'item-9' } }]);

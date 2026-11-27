@@ -24,6 +24,12 @@ export interface LocalTrack {
   youtubeVideoId: string | null;
   youtubeTitle: string | null;
   matchStatus: MatchStatus;
+  /**
+   * The video YouTube last confirmed for this song and when (ms). CrateSync asks again
+   * after 30 days, or at once when the song has another video by then. A match from a
+   * pasted link has none until the first check.
+   */
+  youtubeChecked?: { videoId: string; at: number };
   playCount?: number;
   skipCount?: number;
   lastPlayedAt?: number | null;

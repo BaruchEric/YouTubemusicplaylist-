@@ -104,6 +104,8 @@ interface ScannerViewProps {
   onAddTracksToPlaylist: (playlistId: string, trackIds: string[]) => void;
   onRequestDeleteTracks: (trackIds: string[]) => void;
   onGoToImport: () => void;
+  /** Opens the bulk match window for these songs, or for the whole library when the list is empty. */
+  onOpenBulkMatch: (trackIds: string[]) => void;
 }
 
 export function ScannerView({
@@ -148,6 +150,7 @@ export function ScannerView({
   onAddTracksToPlaylist,
   onRequestDeleteTracks,
   onGoToImport,
+  onOpenBulkMatch,
 }: ScannerViewProps) {
   const [search, setSearch] = useState(initialSearchQuery);
   const [filter, setFilter] = useState<TrackFilter>(initialFilter);
@@ -861,6 +864,19 @@ export function ScannerView({
             <Tags className="h-3.5 w-3.5" />
             <span>
               {selectedArray.length > 0 ? `Edit Tags (${selectedArray.length})` : 'Batch Tags'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            disabled={tracks.length === 0}
+            onClick={() => onOpenBulkMatch(selectedArray)}
+            title="Find the YouTube video for many songs at once"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-[#D1D5DB] bg-[#161920] border border-white/[0.09] hover:text-white hover:bg-[#1E222B] disabled:opacity-40 transition-colors whitespace-nowrap"
+          >
+            <Link2 className="h-3.5 w-3.5" />
+            <span>
+              {selectedArray.length > 0 ? `Match YouTube (${selectedArray.length})` : 'Match YouTube'}
             </span>
           </button>
 

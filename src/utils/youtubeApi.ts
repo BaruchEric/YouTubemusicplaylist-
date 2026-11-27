@@ -1,11 +1,14 @@
 /**
- * The five YouTube Data API v3 calls a playlist push needs. Every call carries the access
+ * The YouTube Data API v3 calls CrateSync makes. Five serve a playlist push: create a
+ * playlist, read its entries, add, move and remove a song. Two serve bulk matching: read a
+ * playlist's videos with their titles, and search for a song. One checks which saved videos
+ * YouTube still has. Every call carries the access
  * token from "Connect YouTube" (scope https://www.googleapis.com/auth/youtube). YouTube Music
  * shows the same playlists as YouTube, so a playlist made here appears in both.
  *
  * Quota: YouTube gives the Google Cloud project 10,000 units a day. Creating a playlist,
  * adding a song, moving a song and removing a song cost 50 each. Reading a page of 50
- * entries costs 1.
+ * entries costs 1, and so does checking 50 videos. One search costs 100.
  */
 
 const API_BASE = 'https://www.googleapis.com/youtube/v3';
@@ -16,6 +19,14 @@ const TITLE_MAX_LENGTH = 150;
 const DESCRIPTION_MAX_LENGTH = 5000;
 /** The list call reads three values of each entry. Without this YouTube sends titles and thumbnails too. */
 const LIST_FIELDS = 'nextPageToken,items(id,snippet(position),contentDetails(videoId))';
+/** The titled read asks for the title and the uploader's channel as well. */
+const VIDEO_LIST_FIELDS =
+  'nextPageToken,items(snippet(title,position,videoOwnerChannelTitle),contentDetails(videoId))';
+const SEARCH_FIELDS = 'items(id(videoId),snippet(title,channelTitle))';
+/** How many results one search asks for. The price is 100 units whatever the number. */
+const SEARCH_RESULT_COUNT = 5;
+/** YouTube's category for music, which keeps trailers and gameplay out of the results. */
+const MUSIC_CATEGORY_ID = '10';
 
 /** Why a call failed, sorted by what the caller should do about it. */
 export type YouTubeFailure =
@@ -66,6 +77,14 @@ export interface YouTubePlaylistItem {
   videoId: string;
 }
 
+/** A video as a playlist or a search names it. */
+export interface YouTubeVideoSummary {
+  videoId: string;
+  title: string;
+  /** The channel that uploaded it. "Artist - Topic" is the upload YouTube Music plays. */
+  channel: string;
+}
+
 export interface YouTubeApi {
   /** Creates a private playlist and returns its id. */
   createPlaylist(input: { title: string; description: string }): Promise<string>;
@@ -84,6 +103,25 @@ export interface YouTubeApi {
     position: number;
   }): Promise<void>;
   deletePlaylistItem(itemId: string): Promise<void>;
+}
+
+/**
+ * The reads bulk matching and the 30-day check of saved matches use. A push needs none of
+ * them, so they stay out of YouTubeApi.
+ */
+export interface YouTubeLookupApi {
+  /**
+   * The playlist's videos with their titles, first to last. Deleted and private videos are
+   * left out. "LL" is the id of the signed-in account's liked videos.
+   */
+  listPlaylistVideos(playlistId: string): Promise<YouTubeVideoSummary[]>;
+  /** Up to five music videos for the words, best first. One call costs 100 quota units. */
+  searchVideos(query: string): Promise<YouTubeVideoSummary[]>;
+  /**
+   * Which of the videos YouTube still has. A deleted or private video is not among them.
+   * Asks for 50 ids per call, 1 quota unit each.
+   */
+  listExistingVideoIds(videoIds: readonly string[]): Promise<Set<string>>;
 }
 
 /** The part of fetch this module uses, so a test can pass a plain function. */
@@ -158,12 +196,49 @@ function positionOf(row: Record<string, unknown>): number | null {
     : null;
 }
 
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  nbsp: ' ',
+};
+
+/** A search reply writes titles as HTML: "Guns N&#39; Roses". This turns them back into text. */
+function decodeHtmlEntities(text: string): string {
+  return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (whole, body: string) => {
+    if (body.startsWith('#')) {
+      const isHex = body[1] === 'x' || body[1] === 'X';
+      const code = Number.parseInt(body.slice(isHex ? 2 : 1), isHex ? 16 : 10);
+      return Number.isInteger(code) && code > 0 && code <= 0x10ffff
+        ? String.fromCodePoint(code)
+        : whole;
+    }
+    return NAMED_ENTITIES[body.toLowerCase()] ?? whole;
+  });
+}
+
+/** Sorts rows by the place each reports. One row without a place means the reply's order has to do. */
+function inPlaylistOrder<T>(rows: readonly T[], positions: ReadonlyArray<number | null>): T[] {
+  const placed: Array<{ row: T; position: number }> = [];
+  for (const [index, row] of rows.entries()) {
+    const position = positions[index];
+    if (position === null || position === undefined) return [...rows];
+    placed.push({ row, position });
+  }
+  return placed.sort((a, b) => a.position - b.position).map((entry) => entry.row);
+}
+
 function playlistTitle(title: string): string {
   const cleaned = title.replace(/[<>]/g, '').replace(/\s+/g, ' ').trim();
   return (cleaned || 'CrateSync playlist').slice(0, TITLE_MAX_LENGTH);
 }
 
-export function createYouTubeApi(accessToken: string, fetchImpl: YouTubeFetch = fetch): YouTubeApi {
+export function createYouTubeApi(
+  accessToken: string,
+  fetchImpl: YouTubeFetch = fetch
+): YouTubeApi & YouTubeLookupApi {
   async function call(
     method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
@@ -261,14 +336,85 @@ export function createYouTubeApi(accessToken: string, fetchImpl: YouTubeFetch = 
       }
 
       // YouTube's reference does not promise the order of the reply, so sort by the place
-      // each entry reports. One entry without a place means the reply's order has to do.
-      const placed: Array<{ item: YouTubePlaylistItem; position: number }> = [];
-      for (const [index, item] of items.entries()) {
-        const position = positions[index];
-        if (position === null || position === undefined) return items;
-        placed.push({ item, position });
+      // each entry reports.
+      return inPlaylistOrder(items, positions);
+    },
+
+    async listPlaylistVideos(playlistId) {
+      const videos: YouTubeVideoSummary[] = [];
+      const positions: Array<number | null> = [];
+      let pageToken: string | null = null;
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const query: Record<string, string> = {
+          part: 'snippet,contentDetails',
+          fields: VIDEO_LIST_FIELDS,
+          playlistId,
+          maxResults: String(PAGE_SIZE),
+        };
+        if (pageToken) query.pageToken = pageToken;
+
+        const payload = await call('GET', 'playlistItems', query);
+        if (!isRecord(payload)) break;
+
+        const rows = Array.isArray(payload.items) ? payload.items : [];
+        for (const row of rows) {
+          if (!isRecord(row) || !isRecord(row.contentDetails) || !isRecord(row.snippet)) continue;
+          const videoId = stringField(row.contentDetails, 'videoId');
+          const title = stringField(row.snippet, 'title');
+          // A deleted or private video keeps its entry but has no owner channel.
+          const channel = stringField(row.snippet, 'videoOwnerChannelTitle');
+          if (!videoId || !title || !channel) continue;
+          videos.push({ videoId, title, channel });
+          positions.push(positionOf(row));
+        }
+
+        pageToken = stringField(payload, 'nextPageToken');
+        if (!pageToken) break;
       }
-      return placed.sort((a, b) => a.position - b.position).map((entry) => entry.item);
+      return inPlaylistOrder(videos, positions);
+    },
+
+    async searchVideos(query) {
+      const payload = await call('GET', 'search', {
+        part: 'snippet',
+        fields: SEARCH_FIELDS,
+        type: 'video',
+        videoCategoryId: MUSIC_CATEGORY_ID,
+        maxResults: String(SEARCH_RESULT_COUNT),
+        q: query,
+      });
+      const rows = isRecord(payload) && Array.isArray(payload.items) ? payload.items : [];
+      const videos: YouTubeVideoSummary[] = [];
+      for (const row of rows) {
+        if (!isRecord(row) || !isRecord(row.id) || !isRecord(row.snippet)) continue;
+        const videoId = stringField(row.id, 'videoId');
+        const title = stringField(row.snippet, 'title');
+        if (!videoId || !title) continue;
+        videos.push({
+          videoId,
+          title: decodeHtmlEntities(title),
+          channel: decodeHtmlEntities(stringField(row.snippet, 'channelTitle') ?? ''),
+        });
+      }
+      return videos;
+    },
+
+    async listExistingVideoIds(videoIds) {
+      const wanted = [...new Set(videoIds)];
+      const existing = new Set<string>();
+      for (let start = 0; start < wanted.length; start += PAGE_SIZE) {
+        const payload = await call('GET', 'videos', {
+          part: 'id',
+          fields: 'items(id)',
+          id: wanted.slice(start, start + PAGE_SIZE).join(','),
+        });
+        const rows = isRecord(payload) && Array.isArray(payload.items) ? payload.items : [];
+        for (const row of rows) {
+          const id = isRecord(row) ? stringField(row, 'id') : null;
+          if (id) existing.add(id);
+        }
+      }
+      return existing;
     },
 
     async insertPlaylistItem(playlistId, videoId, position) {

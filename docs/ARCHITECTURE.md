@@ -24,7 +24,7 @@ All primary domain interfaces are defined in [`src/types/music.ts`](../src/types
   - Identity: `id` (UUID), `fileKey` (`<relativePath.toLowerCase()>::<fileSize>`), optional SHA-256 `contentHash`.
   - `updatedAt` (optional): when the tags or the YouTube match last changed. Two devices that edited the same song settle it by this.
   - Metadata: `title`, `artist`, `album`, `genre`, `year`, `trackNumber`, `duration`, `format`, `fileSize`, `coverArtUrl`.
-  - Sync & playback state: `isMissingOnDevice`, `youtubeVideoId`, `youtubeTitle`, `matchStatus` (`unmatched | matched | skipped`), `playCount`, `skipCount`, `lastPlayedAt`.
+  - Sync & playback state: `isMissingOnDevice`, `youtubeVideoId`, `youtubeTitle`, `matchStatus` (`unmatched | matched | skipped`), `youtubeChecked` (the video id YouTube last confirmed and when), `playCount`, `skipCount`, `lastPlayedAt`.
   - Google Drive linkage: `driveFileId`, `driveModifiedTime`, `drivePath`, `cachedOnDeviceAt`.
 - **`Playlist`**: Ordered `trackIds`, last-synced snapshot `syncedTrackIds`, `youtubePlaylistUrl` (a link the user pasted, or the playlist the first push created), optional `youtubePush` (`YouTubePushRecord`: the YouTube playlist id, the video ids CrateSync itself added to it in the order YouTube has them, and when), `watchedFolderName`, and `SyncRule` (`autoAddNewFiles`, `removeMissingFiles`, `folderFilter`). A new or imported playlist starts with `syncedTrackIds: []` and `lastSyncedAt: null`. Records saved before 2026-11-26 may still carry `syncRule.autoScanIntervalSec`; nothing reads it, because the watch interval is app-wide.
 - **`PlaylistDiff`**: Computed delta (`toAdd`, `toRemove`, `missingOnDevice`, `matchedCount`, `unmatchedCount`, `hasChanges`) produced by [`computePlaylistDiff`](../src/utils/syncEngine.ts).
@@ -59,6 +59,7 @@ Managed in [`src/utils/storage.ts`](../src/utils/storage.ts) with three object s
 | `cratesync_dashboard_smart_filters_v1` | [`src/utils/dashboardSmartFilters.ts`](../src/utils/dashboardSmartFilters.ts) | User-saved dashboard smart filter presets |
 | `cratesync_auto_watch_interval_v1` | [`src/utils/folderWatch.ts`](../src/utils/folderWatch.ts) | Seconds between timed checks of the watched folder (`0`, `30`, `120` or `300`), one value for the whole app |
 | `cratesync_drive_folder_scope_v1` | [`src/components/GoogleDriveTransferSection.tsx`](../src/components/GoogleDriveTransferSection.tsx) | Last selected Google Drive folder scope |
+| `cratesync_bulk_search_memory_v1` | [`src/utils/bulkSearchMemory.ts`](../src/utils/bulkSearchMemory.ts) | Song id to the time Match YouTube last searched YouTube for it. Entries older than 30 days are dropped on read |
 
 > **Security note**: Google Drive OAuth access tokens in [`src/utils/googleAuth.ts`](../src/utils/googleAuth.ts) are stored **exclusively in memory** and are never written to `localStorage`, `sessionStorage`, or IndexedDB.
 
@@ -87,10 +88,10 @@ Implemented across [`src/utils/googleAuth.ts`](../src/utils/googleAuth.ts), [`sr
 
 ## Pushing a playlist to YouTube
 
-[`src/utils/youtubePush.ts`](../src/utils/youtubePush.ts) decides what to send and [`src/utils/youtubeApi.ts`](../src/utils/youtubeApi.ts) makes the five YouTube Data API v3 calls. The dialog is [`src/components/YouTubePushDialog.tsx`](../src/components/YouTubePushDialog.tsx), opened from the playlist's Push to YouTube button.
+[`src/utils/youtubePush.ts`](../src/utils/youtubePush.ts) decides what to send and [`src/utils/youtubeApi.ts`](../src/utils/youtubeApi.ts) makes the five YouTube Data API v3 calls a push needs. They are the `YouTubeApi` interface. The reads that bulk matching and the 30-day check use are a separate interface, `YouTubeLookupApi`, so the push code depends on none of them. The dialog is [`src/components/YouTubePushDialog.tsx`](../src/components/YouTubePushDialog.tsx), opened from the playlist's Push to YouTube button.
 
 1. **Review.** `estimateYouTubePush` works out, from this device alone, how many songs go, how many come off and how many changed place since the last push, so the dialog can show it before anybody signs in.
-2. **Connect.** `connectYouTube` in `googleAuth.ts` opens Google's popup for the scope `https://www.googleapis.com/auth/youtube` only. A signed-in user goes through `reauthenticateWithPopup`, which refuses a different Google account. The access token lives in memory and is dropped after 50 minutes.
+2. **Connect.** `connectYouTube` in `googleAuth.ts` opens Google's popup for the scope `https://www.googleapis.com/auth/youtube` only. A signed-in user goes through `reauthenticateWithPopup`, which refuses a different Google account. The access token lives in memory and is dropped after 50 minutes. With the token in hand the handler first runs the 30-day check of saved matches, described under bulk matching, so the push never sends a video YouTube no longer has.
 3. **Read or create.** A playlist with a link is read with `playlistItems.list`, asking only for each entry's id, video id and position, and sorted by position. One without is created private with `playlists.insert`, and its link is saved on the playlist.
 4. **Diff.** `planYouTubePush` adds the matched videos YouTube lacks, in playlist order. It removes an entry only when its video is in `youtubePush.videoIds` and the playlist no longer holds it. Entries CrateSync did not add are counted as left alone. `planYouTubeOrder` takes the playlist songs YouTube already has, keeps the longest run that is in playlist order, and lists the rest to move.
 5. **Write.** Inserts, then deletes, then moves, one at a time. An insert names its place with `snippet.position`: right after the nearest playlist song before it that is in place, else right before the nearest one after it, else the end. A move is `playlistItems.update` with the same rule. The push keeps its own picture of the YouTube playlist and repeats every write on it, so each next position is counted on the playlist as it then stands. A busy reply (409, a rate limit, a 5xx) gets one more try after two seconds. A video YouTube no longer has is skipped. Anything else stops the push: the daily quota, an expired token, a playlist owned by another account.
@@ -100,7 +101,7 @@ Implemented across [`src/utils/googleAuth.ts`](../src/utils/googleAuth.ts), [`sr
 
 Quota is 10,000 units a day for the Google Cloud project. A list page costs 1 and every write costs 50, a move included. Placing a new song costs nothing extra, because the insert carries the position. Moves run last, so a push that hits the quota has spent it on the songs before their order.
 
-Asking Google for more is a compliance audit, the [Audit and Quota Extension Form](https://support.google.com/youtube/contact/yt_api_form). It wants a public privacy policy and terms of service, screenshots of both and of the consent screen, a way in for the reviewer or a screen recording of a whole push, an architecture diagram and a user flow diagram, and the applicant's legal name and address. [`YOUTUBE_AUDIT.md`](YOUTUBE_AUDIT.md) records the answers given, the files attached and where they fall short. The two diagrams are [`diagrams/architecture.mmd`](diagrams/architecture.mmd) and [`diagrams/push-user-flow.mmd`](diagrams/push-user-flow.mmd), each with its PNG.
+Asking Google for more is a compliance audit, the [Audit and Quota Extension Form](https://support.google.com/youtube/contact/yt_api_form). It wants a public privacy policy and terms of service, screenshots of both and of the consent screen, a way in for the reviewer or a screen recording of a whole push, an architecture diagram and a user flow diagram, and the applicant's legal name and address. [`YOUTUBE_AUDIT.md`](YOUTUBE_AUDIT.md) records the answers given, the files attached and where they fall short. The three diagrams are [`diagrams/architecture.mmd`](diagrams/architecture.mmd), [`diagrams/push-user-flow.mmd`](diagrams/push-user-flow.mmd) and [`diagrams/match-user-flow.mmd`](diagrams/match-user-flow.mmd), each with its PNG.
 
 The public pages are [`privacy.html`](privacy.html), [`terms.html`](terms.html) and [`index.html`](index.html) in this folder, with [`site.css`](site.css). GitHub Pages serves `docs/` from `main` at `https://barucheric.github.io/YouTubemusicplaylist-/`, and `.nojekyll` keeps it from running Jekyll over them. [`src/utils/legalLinks.ts`](../src/utils/legalLinks.ts) holds the addresses, `LegalLinks` puts them at the foot of the sidebar, and the push review window names YouTube API Services with links to the YouTube Terms of Service, the terms and the privacy policy. [`tests/legalPages.test.ts`](../tests/legalPages.test.ts) fails when a page loses a statement YouTube's developer policy requires: that the app uses YouTube API Services, the link to the Google Privacy Policy, the Google page where access is revoked, a contact address, and the sentence binding users to the YouTube Terms of Service. A change to what CrateSync reads or stores goes into `privacy.html` in the same commit.
 
@@ -108,6 +109,50 @@ The push was run against the real YouTube on 2026-11-26 from music.beric.ca: one
 
 - Google shows "Google hasn't verified this app" before its consent page, because the project's OAuth client has not been through Google's verification. Advanced leads on to the consent page.
 - A browser signed in to several Google accounts opens a playlist link with the first one, and YouTube answers "The playlist does not exist" for a private playlist another account owns. The finished window and the playlist's link say so.
+
+## Matching many songs to YouTube
+
+A push sends only songs that have a `youtubeVideoId`. Match YouTube on Device Storage fills that in for many songs at once. [`src/utils/bulkMatch.ts`](../src/utils/bulkMatch.ts) holds the rules, [`src/hooks/useBulkMatch.ts`](../src/hooks/useBulkMatch.ts) runs them and talks to YouTube, and [`src/components/BulkMatchDialog.tsx`](../src/components/BulkMatchDialog.tsx) is the window. It works on the songs `songsToMatch` returns: no video yet and not marked skipped. Opened with rows ticked, it works on those rows only.
+
+1. **Videos come from one of three places.**
+   - **Search.** `searchForMatches` calls `search.list` once per song with `type=video`, `videoCategoryId=10` (music) and `maxResults=5`, and asks only for each result's video id, title and channel title. The query is the artist and the title (`searchQueryFor`), without a track number the title took from the file name. `orderForSearch` puts songs that sit in a playlist first. A busy reply gets one more try after two seconds. Any other failure, the daily quota included, ends the run with what it found. The Stop button aborts between two songs.
+   - **A playlist.** `playlistIdForLookup` reads the id from a link or takes a bare id, and turns YouTube Music's `LM` (liked songs) into `LL`, the name the Data API has for the same list. `listPlaylistVideos` reads it with `playlistItems.list`, this time asking for the title and `videoOwnerChannelTitle` too. An entry without an owner channel is a deleted or private video and is left out.
+   - **A list.** `parseImportedText` from `youtubeLinks.ts` reads pasted lines or a CSV, M3U or JSON file, and `candidatesFromSeeds` keeps the lines that carry a video id. No YouTube call is made.
+2. **Scoring.** `scoreCandidate` compares one song with one video and answers `exact`, `likely` or null.
+   - Both sides are normalized: lower case, accents and punctuation dropped, `&` read as `and`.
+   - A video title is split at its dashes and read three ways: the whole title with the channel as the artist, `Artist - Title`, and `Title - Artist`. Bracketed notes, a trailing `feat.` and a release note such as `2017 Remaster` are taken out first.
+   - The song's title may also be matched without a leading track number, which a Drive listing leaves in ("09 Fireflies").
+   - Version words (`live`, `remix`, `acoustic`, `instrumental`, `karaoke`, `cover`, `demo`, `unplugged`) must agree. The video's set has to equal the title's set, or the title's set plus the album's, so a song from a live album takes a live video or a plain one and never a karaoke one.
+   - The artist is the whole tag, or the first of several tagged artists when that name has two words or six letters. It has to appear as words in the channel or in the artist part of the title, or with the spaces removed (`JoeCockerVEVO`).
+   - `exact` is the same title with the artist found. `likely` is a close title (85% of the words shared) with the artist found, or the same title for a song whose artist is unknown.
+3. **Picking.** Exact beats likely, then the video whose version words fit the album, then an `Artist - Topic` channel, which is the upload YouTube Music plays, then the earlier result. `planBulkMatch` indexes a playlist's videos by title and by word, so matching 2,500 songs against 5,000 videos does not compare every pair.
+4. **Review and apply.** The window lists each song next to its video with a link to YouTube Music. Exact matches come ticked. `applyMatches` writes `youtubeVideoId` and `matchStatus: 'matched'` for the ticked ones and leaves a song that already has a video alone. It goes through `setTracks`, so each song is stamped and the next Drive sync carries the match.
+
+A search costs 100 quota units (`YOUTUBE_SEARCH_COST_UNITS`) whatever it returns, so 10,000 units cover 100 songs a day and the whole of a 2,568-song library takes 26 days. The window caps one run at a day's worth and shows the cost before it starts. [`bulkSearchMemory.ts`](../src/utils/bulkSearchMemory.ts) records every song searched, matched or not, and leaves it out of later runs for 30 days, because the same query returns the same videos. "Search them again" in the window clears that record.
+
+Of what YouTube returns, only the video id of an applied match is stored. Titles and channel names live in the window's state and are gone when it closes.
+
+### The 30-day check of saved matches
+
+YouTube's [developer policy](https://developers.google.com/youtube/terms/developer-policies) (section III.E.4) lets an app keep API data for 30 days. After that the app refreshes it or deletes it. A match is a video id, so [`src/utils/matchRefresh.ts`](../src/utils/matchRefresh.ts) asks YouTube whether each saved video still exists.
+
+- `LocalTrack.youtubeChecked` holds the video id YouTube last confirmed and when. `applyMatches` sets it for a match that came from a search or a playlist read. A pasted link has none.
+- `matchesDueForRefresh` picks the matched songs with no check, a check of another video id, or a check 30 days old.
+- `refreshMatches` sends their ids to `videos.list` with `part=id`, 50 per call at 1 quota unit a call, and sorts them into confirmed and gone. A call YouTube refuses changes nothing.
+- `applyMatchRefresh` stamps the confirmed songs and clears the match of a song whose video is gone: `youtubeVideoId` and `youtubeTitle` go to null and `matchStatus` to `unmatched`. A toast says how many.
+
+The check runs when CrateSync holds a YouTube token anyway: in `handleStartYouTubePush` before the push reads the playlist, and in `useBulkMatch` before a search or a playlist read. CrateSync has no token while nobody is connected, so a match can pass 30 days unchecked until the next push or lookup. The check covers the whole library each time, which is 52 units for 2,568 songs.
+
+## How a folder scan tells which song a file is
+
+[`src/utils/scanMatch.ts`](../src/utils/scanMatch.ts) answers that for every audio file a scan finds (`createScanMatcher`), and `ingestAudioEntries` in `App.tsx` acts on the answer.
+
+1. **Known.** The file's lower-case path and size equal a song's `fileKey`, or its path and size. The second check finds a Drive song, which keeps its `gdrive::<id>` key after it takes a local path.
+2. **The local copy of a Drive song.** The file has the name and byte size of a Drive song that still sits at the path Drive gave it (`relativePath` is `drivePath` plus the file name). The scan links the two with `linkDriveSongToLocalFile`: the song takes the file's path and the scanned folder's name, keeps its id, key and Drive fields, and the audio is saved under its existing key. From then on step 1 finds it. When two Drive songs share a name and size, the one with more parent folders in common wins. Each Drive song goes to one file per scan, so a second copy of the file elsewhere becomes a new song.
+3. **A loose file.** A file picked on its own has no folder. It goes to a Drive song still at its Drive path, which keeps that path, or back to a song that lost its audio on this device.
+4. **New.** Anything else is parsed with `extractLocalTrack` and added.
+
+Before this rule a file in a folder never matched a Drive song, so scanning the local copy of a Drive library added every song a second time.
 
 ## How the client code is split
 
@@ -161,7 +206,11 @@ Managed by [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts), [`sr
 | `folderMappings.ts` | Device profiles, cross-platform path normalization, Drive-to-local binding resolution, merging & tombstones |
 | `libraryMerge.ts` | Joins two devices' songs and playlists for a push or a pull: newest edit wins, deletions as tombstones, edit stamps |
 | `youtubeLinks.ts` | YouTube ID/playlist URL extraction, queue batch builders, M3U8/CSV/JSON/TXT import & export |
-| `youtubeApi.ts` | YouTube Data API v3 client for a push: create a playlist, list its entries in order, add one at a place, move one, remove one, and sort failures by what to do about them |
+| `youtubeApi.ts` | YouTube Data API v3 client. For a push: create a playlist, list its entries in order, add one at a place, move one, remove one. For bulk matching: list a playlist's videos with titles, and search for a song. For the 30-day check: which video ids still exist. Sorts failures by what to do about them |
+| `bulkMatch.ts` | Bulk matching rules: normalize titles and artists, score a video against a song, pick the best of a pool or of a search's results, run a search over many songs, apply the kept matches |
+| `bulkSearchMemory.ts` | Remembers for 30 days which songs YouTube was searched for |
+| `matchRefresh.ts` | The 30-day check of saved matches: which are due, the `videos.list` question, clearing the ones YouTube no longer has |
+| `scanMatch.ts` | Tells which library song a scanned file is, and links a Drive song to its local file |
 | `youtubePush.ts` | Plans and runs a push to YouTube: the estimate shown before sign-in, the diff, which songs have to move, the write loop, and the record stored on the playlist |
 | `smartPlaylists.ts` | Smart Playlist rule definitions, field metadata, and evaluation/sorting engine |
 | `smartSearch.ts` | Global search tokenizer, query operator parser, and scored track/album/genre/playlist matching |
@@ -179,5 +228,5 @@ Managed by [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts), [`sr
 - **Screen and chart loading**: `lazyComponent` (a part whose script the browser fetches on its own), `LazyViews` (the seven screens, `fetchAllViews`, `ViewBoundary`), `LazyCharts` (the six dashboard charts, `ChartBoundary`) and `CodeBoundary`, which shows a message in place of a part that fails to load
 - **Navigation & Chrome**: `Sidebar`, `TopBar`, `MiniPlayer`, `ToastContainer`, `DashboardJumpMenu`, `DashboardQuickActionsMenu`
 - **Google Drive & Folder UI**: `GoogleDriveTransferSection`, `FolderMappingsPanel`, `DriveFolderBrowserModal`, `LocalFolderBrowserModal`
-- **Library Maintenance & Editing**: `TrackMatchDrawer`, `BatchTagEditorModal`, `DuplicateFinderPanel`, `AudioIntegrityPanel`, `LibraryCleanupPanel`, `Modals`, `YouTubePushDialog`, `SmartPlaylistModal`, `SmartSearchModal`
+- **Library Maintenance & Editing**: `TrackMatchDrawer`, `BatchTagEditorModal`, `DuplicateFinderPanel`, `AudioIntegrityPanel`, `LibraryCleanupPanel`, `Modals`, `YouTubePushDialog`, `BulkMatchDialog`, `SmartPlaylistModal`, `SmartSearchModal`
 - **Analytics & Discovery**: `GenreDistributionChart`, `GlobalGenreDistributionChart`, `SmartPlaylistGenreBreakdown`, `DailyListeningChart`, `WeeklyListeningHabitsChart`, `WeeklyTracksAddedChart`, `ListeningActivityHeatmap`, `ListeningActivitySection`, `TrackStatisticsPanel`, `AlbumArtGallery`, `RecommendedForYou`, `DashboardSmartFilter`

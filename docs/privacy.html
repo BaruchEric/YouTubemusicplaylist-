@@ -23,8 +23,9 @@
       <div class="summary">
         <p>
           CrateSync keeps your music library in your own browser. It has no database of its own.
-          It talks to Google only when you ask it to: to sign you in, to push a playlist to
-          YouTube, to sync with your Google Drive, or to look up song details.
+          It talks to Google only when you ask it to: to sign you in, to find your songs on
+          YouTube, to push a playlist there, to sync with your Google Drive, or to look up
+          song details.
         </p>
         <p>It shows no ads, runs no analytics and sells nothing to anyone.</p>
       </div>
@@ -47,8 +48,13 @@
         <li>Play counts, skips and a play history of up to 2,000 entries.</li>
         <li>Your settings, and a name for the device.</li>
         <li>
-          The YouTube video ID you matched to a song, the ID and link of a YouTube playlist you
-          pushed to, the IDs of the videos CrateSync added to it, and the time of the last push.
+          The YouTube video ID you matched to a song and the time YouTube last confirmed that
+          video, the ID and link of a YouTube playlist you pushed to, the IDs of the videos
+          CrateSync added to it, and the time of the last push.
+        </li>
+        <li>
+          Which songs Match YouTube searched for and when, for 30 days, so it does not spend a
+          search on the same song twice.
         </li>
       </ul>
       <p>
@@ -72,10 +78,12 @@
 
       <h2>YouTube</h2>
       <p>
-        CrateSync uses YouTube API Services to send a playlist to your YouTube account. It asks
-        Google for access to your YouTube account when you click Push to YouTube, and at no
-        other time. With that access it does five things:
+        CrateSync uses YouTube API Services to find the YouTube video for a song and to send a
+        playlist to your YouTube account. It asks Google for access to your YouTube account
+        when you click Push to YouTube, or when you start a search or a playlist read in Match
+        YouTube, and at no other time.
       </p>
+      <p>A push does five things with that access:</p>
       <ul>
         <li>It creates a private playlist on your account when the playlist has none yet.</li>
         <li>
@@ -86,9 +94,31 @@
         <li>It moves a video that is out of order.</li>
         <li>It removes a video, and only one that an earlier push from CrateSync added.</li>
       </ul>
+      <p>Match YouTube does two things with it, and only the one you pick:</p>
+      <ul>
+        <li>
+          It searches YouTube for a song. The search sends the song's artist and title to
+          YouTube and gets back up to five videos, each with its ID, title and channel name.
+        </li>
+        <li>
+          It reads a playlist you give it the link of, which can be your liked videos. It asks
+          for each video's ID, title, channel name and position.
+        </li>
+      </ul>
       <p>
-        CrateSync does not read your watch history, your subscriptions, your comments, your
-        liked videos or your channel details. It does not download audio or video from YouTube.
+        CrateSync shows you the videos it found next to your songs. It saves the video ID of
+        each match you apply. It does not save the titles or the channel names.
+      </p>
+      <p>
+        A saved video ID is checked again after 30 days. The next time you push a playlist or
+        use Match YouTube, CrateSync asks YouTube whether the videos saved more than 30 days
+        ago still exist. That question sends the video IDs and nothing else. A song whose
+        video is gone loses its match, and CrateSync tells you how many did.
+      </p>
+      <p>
+        CrateSync does not read your watch history, your subscriptions, your comments or your
+        channel details, and it reads no playlist you did not give it. It does not download
+        audio or video from YouTube.
       </p>
       <p>
         The access token from Google stays in the page's memory. CrateSync never writes it to
@@ -97,7 +127,8 @@
       </p>
       <p>
         From YouTube, CrateSync keeps only the playlist ID and the video IDs listed under
-        "What stays on your device". It reads the playlist again on every push.
+        "What stays on your device". It reads the playlist again on every push. To delete a
+        saved video ID, clear the match on the song or delete the song.
       </p>
       <p>
         When a song has no audio file on your device, CrateSync can play its match in YouTube's

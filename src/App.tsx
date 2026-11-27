@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { X } from 'lucide-react';
 import { BatchTagEditorModal, type BatchTrackPatch } from './components/BatchTagEditorModal';
+import { BulkMatchDialog } from './components/BulkMatchDialog';
 import {
   DashboardView,
   PlaylistView,
@@ -33,6 +34,7 @@ import { YouTubePushDialog, type YouTubePushDialogState } from './components/You
 import { TopBar } from './components/TopBar';
 import { TrackMatchDrawer } from './components/TrackMatchDrawer';
 import { useAudioPlayer } from './hooks/useAudioPlayer';
+import { useBulkMatch } from './hooks/useBulkMatch';
 import { useToasts, type ToastStat } from './hooks/useToasts';
 import type {
   DeviceFolderBinding,
@@ -126,6 +128,7 @@ import {
   getYouTubeAccessToken,
 } from './utils/googleAuth';
 import { createYouTubeApi } from './utils/youtubeApi';
+import { applyMatchRefresh, describeClearedMatches, refreshMatches } from './utils/matchRefresh';
 import {
   estimateYouTubePush,
   playlistAfterPush,
@@ -261,6 +264,18 @@ export default function App() {
     state: YouTubePushDialogState;
   } | null>(null);
   const youtubePushAbortRef = useRef<AbortController | null>(null);
+  const reportClearedMatches = (count: number) =>
+    pushToast({
+      title: 'YouTube matches cleared',
+      description: describeClearedMatches(count),
+      tone: 'warning',
+    });
+  const bulkMatch = useBulkMatch({
+    tracks,
+    playlists,
+    setTracks,
+    onMatchesCleared: reportClearedMatches,
+  });
 
   // Live in-memory references (audio Blobs for playback + FileSystemDirectoryHandle for auto-watch)
   const fileMapRef = useRef<Map<string, Blob>>(new Map());
@@ -1685,9 +1700,6 @@ export default function App() {
     const playlistId = youtubePush.playlistId;
     const playlist = playlists.find((p) => p.id === playlistId);
     if (!playlist) return;
-    const playlistTracks = playlist.trackIds
-      .map((id) => trackMap.get(id))
-      .filter((t): t is LocalTrack => Boolean(t));
 
     setYouTubePush({ playlistId, state: { phase: 'working', progress: null } });
 
@@ -1702,11 +1714,26 @@ export default function App() {
       return;
     }
 
+    const api = createYouTubeApi(accessToken);
+    const now = Date.now();
+
+    // The 30-day check of saved matches comes first, so the push does not send a video
+    // YouTube no longer has. A check YouTube refuses changes nothing.
+    const refresh = await refreshMatches({ api, tracks, now });
+    const refreshed = applyMatchRefresh(tracks, refresh, now);
+    if (refreshed.tracks !== tracks) {
+      setTracks((prev) => applyMatchRefresh(prev, refresh, now).tracks);
+    }
+    if (refreshed.clearedCount > 0) reportClearedMatches(refreshed.clearedCount);
+    const library = new Map(refreshed.tracks.map((track) => [track.id, track]));
+    const playlistTracks = playlist.trackIds
+      .map((id) => library.get(id))
+      .filter((t): t is LocalTrack => Boolean(t));
+
     const controller = new AbortController();
     youtubePushAbortRef.current = controller;
-    const now = Date.now();
     const outcome = await pushPlaylistToYouTube({
-      api: createYouTubeApi(accessToken),
+      api,
       playlist,
       tracks: playlistTracks,
       now,
@@ -1724,7 +1751,7 @@ export default function App() {
 
     setPlaylists((prev) =>
       prev.map((pl) =>
-        pl.id === playlistId ? playlistAfterPush(pl, outcome, now, trackMap) : pl
+        pl.id === playlistId ? playlistAfterPush(pl, outcome, now, library) : pl
       )
     );
 
@@ -3114,6 +3141,7 @@ export default function App() {
                 setPendingConfirm({ kind: 'delete-tracks', trackIds })
               }
               onGoToImport={() => setActiveView('transfer')}
+              onOpenBulkMatch={bulkMatch.openFor}
             />
           )}
 
@@ -3403,6 +3431,25 @@ export default function App() {
           onStart={handleStartYouTubePush}
           onStop={() => youtubePushAbortRef.current?.abort()}
           onClose={() => setYouTubePush(null)}
+        />
+      )}
+
+      {bulkMatch.state && (
+        <BulkMatchDialog
+          tracks={tracks}
+          selectedCount={bulkMatch.selectedCount}
+          unmatchedCount={bulkMatch.unmatchedCount}
+          searchableCount={bulkMatch.searchableCount}
+          state={bulkMatch.state}
+          isConnected={getYouTubeAccessToken() !== null}
+          onSearch={bulkMatch.search}
+          onReadPlaylist={bulkMatch.readPlaylist}
+          onReadList={bulkMatch.readList}
+          onForgetSearched={bulkMatch.forgetSearched}
+          onStop={bulkMatch.stop}
+          onApply={bulkMatch.apply}
+          onBack={bulkMatch.back}
+          onClose={bulkMatch.close}
         />
       )}
 
