@@ -128,6 +128,41 @@ describe('scoreCandidate', () => {
     );
   });
 
+  test('a karaoke upload is no match when the note sits outside brackets', () => {
+    const track = song('Almost Lover', 'A Fine Frenzy');
+    const piped = video('Almost Lover - A Fine Frenzy | Karaoke Version | KaraFun', 'KaraFun Karaoke');
+    expect(scoreCandidate(track, piped)).toBeNull();
+    expect(scoreCandidate(track, video('A Fine Frenzy - Almost Lover', 'Sing King Karaoke'))).toBeNull();
+  });
+
+  test('an extended, dub, alternate or re-recorded cut is no match for the plain song', () => {
+    expect(
+      scoreCandidate(
+        song('All That She Wants', 'Ace of Base'),
+        video('All That She Wants (Extended Dub)', 'Ace of Base - Topic')
+      )
+    ).toBeNull();
+    expect(
+      scoreCandidate(
+        song('Behind Blue Eyes', 'The Who'),
+        video('Behind Blue Eyes (Alternate Studio Version)', 'The Who - Topic')
+      )
+    ).toBeNull();
+    expect(
+      scoreCandidate(
+        song('Always on My Mind', 'Chris de Burgh'),
+        video('Always On My Mind (Re-Recorded Version)', 'Chris de Burgh - Topic')
+      )
+    ).toBeNull();
+    // The song's own tag asks for the long cut, so the long cut fits.
+    expect(
+      scoreCandidate(
+        song('Blue Monday (Extended Version)', 'New Order'),
+        video('Blue Monday (Extended)', 'New Order - Topic')
+      )
+    ).toBe('exact');
+  });
+
   test('a song from a live album takes the live video or the studio one', () => {
     const track = makeTrack({
       id: 't1',

@@ -79,6 +79,7 @@ import {
   type LocalLibraryForPush,
 } from './utils/libraryMerge';
 import { planPlaylistImport } from './utils/playlistImport';
+import { removeDuplicateTracks } from './utils/duplicateRemoval';
 import { createScanMatcher, linkDriveSongToLocalFile, type ScannedFile } from './utils/scanMatch';
 import { nameSizeKey } from './utils/fileNameKey';
 import { countDeviceFiles } from './utils/trackSource';
@@ -2773,8 +2774,8 @@ export default function App() {
         audioPlayer.stop();
       }
     } else if (pendingConfirm.kind === 'remove-duplicates') {
-      const delSet = new Set(pendingConfirm.trackIds);
-      const { remapToKeep } = pendingConfirm;
+      const { trackIds: duplicateIds, remapToKeep } = pendingConfirm;
+      const delSet = new Set(duplicateIds);
       const removedTracks = tracks.filter((t) => delSet.has(t.id));
       const removedKeys = removedTracks.map((t) => t.fileKey);
       addLibraryTombstones(removedTracks.map((t) => trackTombstone(t, Date.now())));
@@ -2787,7 +2788,7 @@ export default function App() {
         for (const key of removedKeys) next.delete(key);
         return next;
       });
-      setTracks((prev) => prev.filter((t) => !delSet.has(t.id)));
+      setTracks((prev) => removeDuplicateTracks(prev, duplicateIds, remapToKeep));
       const remapIds = (ids: string[]) => {
         const seen = new Set<string>();
         const out: string[] = [];

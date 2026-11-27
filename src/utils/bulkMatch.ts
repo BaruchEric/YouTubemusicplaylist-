@@ -48,7 +48,12 @@ const VERSION_WORDS = [
   'cover',
   'demo',
   'unplugged',
+  'extended',
+  'dub',
+  'alternate',
 ];
+/** "Re-Recorded Version" and "Rerecording" are one note, which no single word catches. */
+const RERECORDED = /(?:^| )re ?record(?:ed|ing)(?: |$)/;
 
 const BRACKETED = /[([{]([^)\]}]*)[)\]}]/g;
 const FEATURED = /\s+(?:feat\.?|ft\.?|featuring)\s.*$/i;
@@ -77,8 +82,20 @@ function compact(normalized: string): string {
 }
 
 function versionWordsIn(text: string): string[] {
-  const words = new Set(normalizeForMatch(text).split(' '));
-  return VERSION_WORDS.filter((word) => words.has(word));
+  const normalized = normalizeForMatch(text);
+  const words = new Set(normalized.split(' '));
+  const found = VERSION_WORDS.filter((word) => words.has(word));
+  if (RERECORDED.test(normalized)) found.push('rerecorded');
+  return found;
+}
+
+/**
+ * Adds "karaoke" when any of the texts says it. A karaoke upload often says so outside
+ * brackets, in a note set off by pipes or only in the channel's name.
+ */
+function withKaraoke(versions: readonly string[], ...texts: string[]): string[] {
+  const saysIt = texts.some((text) => normalizeForMatch(text).split(' ').includes('karaoke'));
+  return saysIt ? [...new Set([...versions, 'karaoke'])].sort() : [...versions];
 }
 
 interface TitleParts {
@@ -153,7 +170,9 @@ function fileBaseName(fileName: string): string {
 }
 
 function songForm(track: SongToMatch): SongForm {
-  const { parts, versions } = titleParts(track.title);
+  const { parts, versions: bracketed } = titleParts(track.title);
+  // A song called "Karaoke" still fits its own video, which says the word too.
+  const versions = withKaraoke(bracketed, track.title);
   const artists = artistNames(track.artist);
   const titles = new Set<string>([normalizeForMatch(parts.join(' '))]);
 
@@ -183,7 +202,8 @@ interface CandidateForm {
 }
 
 function candidateForm(candidate: MatchCandidate): CandidateForm {
-  const { parts, versions } = titleParts(candidate.title);
+  const { parts, versions: bracketed } = titleParts(candidate.title);
+  const versions = withKaraoke(bracketed, candidate.title, candidate.channel);
   const channel = normalizeForMatch(candidate.channel);
   const whole = normalizeForMatch(parts.join(' '));
   const readings: Reading[] = [{ title: whole, artistText: channel }];
