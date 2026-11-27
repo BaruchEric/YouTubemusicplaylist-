@@ -154,6 +154,8 @@ The check runs when CrateSync holds a YouTube token anyway: in `handleStartYouTu
 
 Before this rule a file in a folder never matched a Drive song, so scanning the local copy of a Drive library added every song a second time.
 
+Names and paths are compared after `foldFileName` in [`src/utils/fileNameKey.ts`](../src/utils/fileNameKey.ts) folds them to one Unicode spelling (NFC) and to lower case. macOS hands back "é" as "e" plus a combining accent and Google Drive sends one character, so without the fold a file such as `01 L'Eté Indien.mp3` never matched its Drive song. The first scan of a 2,568-song folder linked 2,559 songs and added the 9 with an accent in the file name a second time. The manifest merge and the Drive pull use the same key (`nameSizeKey`).
+
 A song the Drive listing added has a duration of 0 until a file has been read. When the scan finds the local file of such a song, `readTagsFromScannedFile` in [`src/utils/driveTagReader.ts`](../src/utils/driveTagReader.ts) reads its tags and length from that file, so the song loses its file-name title in the same scan.
 
 ## Reading a Drive song's tags without downloading it
@@ -225,6 +227,7 @@ Managed by [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts), [`sr
 | `bulkSearchMemory.ts` | Remembers for 30 days which songs YouTube was searched for |
 | `matchRefresh.ts` | The 30-day check of saved matches: which are due, the `videos.list` question, clearing the ones YouTube no longer has |
 | `scanMatch.ts` | Tells which library song a scanned file is, and links a Drive song to its local file |
+| `fileNameKey.ts` | Folds a file name to one Unicode spelling and lower case, and builds the name-and-size key the scan, the manifest merge and the Drive pull compare |
 | `fileTags.ts` | The guess the Drive listing makes from a file's name and folders, and the one rule for which fields a file's tags replace (`applyFileTags`) |
 | `driveTagReader.ts` | Read Tags: which Drive songs need a read, the run over them with retries, batches and a stop, and the tag read a folder scan does for a linked song |
 | `youtubePush.ts` | Plans and runs a push to YouTube: the estimate shown before sign-in, the diff, which songs have to move, the write loop, and the record stored on the playlist |

@@ -80,6 +80,7 @@ import {
 } from './utils/libraryMerge';
 import { planPlaylistImport } from './utils/playlistImport';
 import { createScanMatcher, linkDriveSongToLocalFile, type ScannedFile } from './utils/scanMatch';
+import { nameSizeKey } from './utils/fileNameKey';
 import { countDeviceFiles } from './utils/trackSource';
 import {
   inspectAudioBlobIntegrity,
@@ -2373,7 +2374,7 @@ export default function App() {
         existingById.set(t.id, t);
         existingByFileKey.set(t.fileKey.toLowerCase(), t);
         if (t.fileSize > 0) {
-          existingByNameSize.set(`${t.fileName.toLowerCase()}::${t.fileSize}`, t);
+          existingByNameSize.set(nameSizeKey(t.fileName, t.fileSize), t);
         }
       }
 
@@ -2458,7 +2459,7 @@ export default function App() {
             existingById.get(incoming.id) ??
             existingByFileKey.get(incoming.fileKey.toLowerCase()) ??
             (incoming.fileSize > 0
-              ? existingByNameSize.get(`${incoming.fileName.toLowerCase()}::${incoming.fileSize}`)
+              ? existingByNameSize.get(nameSizeKey(incoming.fileName, incoming.fileSize))
               : undefined);
 
           if (matched) {
@@ -2506,7 +2507,7 @@ export default function App() {
       for (const t of nextById.values()) {
         if (t.driveFileId) reconciledByDriveId.set(t.driveFileId, t);
         if (t.fileSize > 0) {
-          reconciledByNameSize.set(`${t.fileName.toLowerCase()}::${t.fileSize}`, t);
+          reconciledByNameSize.set(nameSizeKey(t.fileName, t.fileSize), t);
         }
       }
 
@@ -2541,8 +2542,8 @@ export default function App() {
           reconciledByDriveId.get(driveFile.id) ??
           existingByDriveId.get(driveFile.id) ??
           (driveFile.size > 0
-            ? reconciledByNameSize.get(`${driveFile.name.toLowerCase()}::${driveFile.size}`) ??
-              existingByNameSize.get(`${driveFile.name.toLowerCase()}::${driveFile.size}`)
+            ? reconciledByNameSize.get(nameSizeKey(driveFile.name, driveFile.size)) ??
+              existingByNameSize.get(nameSizeKey(driveFile.name, driveFile.size))
             : undefined);
 
         if (matched) {

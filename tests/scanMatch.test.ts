@@ -149,6 +149,41 @@ describe('createScanMatcher', () => {
     });
   });
 
+  // macOS hands back "é" as "e" plus a combining accent. Google Drive sends one character.
+  test('links a Drive song to a file whose name spells an accent with two characters', () => {
+    const song = driveSong('d1', 'Google Drive/Music/Joe Dassin/Vol.1', "01 L'Et\u00e9 Indien.mp3");
+    const matcher = createScanMatcher([song], noAudio);
+
+    expect(matcher.match(file("Music/Joe Dassin/Vol.1/01 L'Ete\u0301 Indien.mp3"))).toEqual({
+      kind: 'drive-copy',
+      track: song,
+    });
+  });
+
+  test('knows a scanned file again when its accent is spelled the other way', () => {
+    const track = makeTrack({
+      id: 'a',
+      fileKey: 'music/caf\u00e9.mp3::1000',
+      fileName: 'Caf\u00e9.mp3',
+      relativePath: 'Music/Caf\u00e9.mp3',
+      fileSize: 1000,
+    });
+    const matcher = createScanMatcher([track], noAudio);
+
+    expect(matcher.match(file('Music/Cafe\u0301.mp3', 1000))).toEqual({ kind: 'known', track });
+  });
+
+  test('counts a folder as shared when its accent is spelled the other way', () => {
+    const wrong = driveSong('d1', 'Google Drive/Music/Various/Hits', '01 Halo.mp3');
+    const right = driveSong('d2', 'Google Drive/Music/Beyonc\u00e9/Hits', '01 Halo.mp3');
+    const matcher = createScanMatcher([wrong, right], noAudio);
+
+    expect(matcher.match(file('Music/Beyonce\u0301/Hits/01 Halo.mp3'))).toEqual({
+      kind: 'drive-copy',
+      track: right,
+    });
+  });
+
   test('never links an empty file by name', () => {
     const track = driveSong('d1', 'Google Drive/Music/Joe Cocker/Live', '04 Up.mp3', 0);
     const matcher = createScanMatcher([track], noAudio);

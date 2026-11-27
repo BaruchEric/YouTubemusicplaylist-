@@ -226,6 +226,19 @@ describe('mergeLibraryForPush', () => {
     expect(result.carriedOver.tracks).toBe(0);
   });
 
+  test('writes one record for a file whose name spells an accent differently on each side', () => {
+    // macOS hands back "é" as "e" plus a combining accent. Google Drive sends one character.
+    const mine = makeTrack({ id: 'mine', fileKey: 'music/ete\u0301.mp3::1000', fileName: 'Ete\u0301.mp3' });
+    const theirs = makeTrack({ id: 'theirs', fileKey: 'gdrive::d1', fileName: 'Et\u00e9.mp3', driveFileId: 'd1' });
+    const result = mergeLibraryForPush({
+      local: snapshot({ tracks: [mine] }),
+      remote: snapshot({ tracks: [theirs] }),
+      holdsAudio: nobodyHoldsAudio,
+      now: NOW,
+    });
+    expect(result.library.tracks.map((t) => t.id)).toEqual(['mine']);
+  });
+
   test('lets the newer tag edit of a shared song win', () => {
     const mine = makeTrack({ id: 'a', title: 'Mine', updatedAt: T1 });
     const theirs = makeTrack({ id: 'a', title: 'Theirs', updatedAt: T2 });

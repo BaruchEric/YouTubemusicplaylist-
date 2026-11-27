@@ -7,6 +7,7 @@
  * a second entry for it.
  */
 import type { LocalTrack } from '../types/music';
+import { foldFileName, nameSizeKey } from './fileNameKey';
 
 /** What a scan knows about a file before reading it. */
 export interface ScannedFile {
@@ -28,24 +29,20 @@ export interface ScanMatcher {
   match(file: ScannedFile): ScanMatch;
 }
 
-function nameSizeKey(name: string, size: number): string {
-  return `${name.toLowerCase()}::${size}`;
-}
-
 function pathSizeKey(relativePath: string, size: number): string {
-  return `${relativePath.toLowerCase()}::${size}`;
+  return `${foldFileName(relativePath)}::${size}`;
 }
 
 /** True while a Drive song still sits at the path Drive gave it, so no local file holds it. */
 function isAtDrivePath(track: LocalTrack): boolean {
   if (!track.driveFileId || !track.drivePath) return false;
-  return track.relativePath.toLowerCase() === `${track.drivePath}/${track.fileName}`.toLowerCase();
+  return foldFileName(track.relativePath) === foldFileName(`${track.drivePath}/${track.fileName}`);
 }
 
 /** How many folders two paths share, counted back from the file. */
 function sharedParentFolders(a: string, b: string): number {
-  const left = a.toLowerCase().split('/').slice(0, -1).reverse();
-  const right = b.toLowerCase().split('/').slice(0, -1).reverse();
+  const left = foldFileName(a).split('/').slice(0, -1).reverse();
+  const right = foldFileName(b).split('/').slice(0, -1).reverse();
   let shared = 0;
   while (shared < left.length && shared < right.length && left[shared] === right[shared]) shared++;
   return shared;
@@ -79,8 +76,10 @@ export function createScanMatcher(
 
   return {
     match(file) {
-      const key = pathSizeKey(file.relativePath, file.size);
-      const same = byKey.get(key) ?? byPathSize.get(key);
+      // A scanned song's key is its path as the disk spelled it, in lower case.
+      const same =
+        byKey.get(`${file.relativePath.toLowerCase()}::${file.size}`) ??
+        byPathSize.get(pathSizeKey(file.relativePath, file.size));
       if (same) return { kind: 'known', track: same };
       if (file.size <= 0) return { kind: 'new' };
 

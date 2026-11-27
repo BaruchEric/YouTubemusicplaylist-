@@ -5,6 +5,7 @@ import type {
   SmartPlaylist,
   SyncEvent,
 } from '../types/music';
+import { nameSizeKey } from './fileNameKey';
 
 /** The part of a library that devices share through the Drive manifest. */
 export interface LibrarySnapshot {
@@ -289,7 +290,7 @@ function buildTrackMatcher(local: readonly LocalTrack[]): (remote: LocalTrack) =
     byId.set(track.id, track);
     byFileKey.set(track.fileKey.toLowerCase(), track);
     if (track.fileSize > 0) {
-      byNameSize.set(`${track.fileName.toLowerCase()}::${track.fileSize}`, track);
+      byNameSize.set(nameSizeKey(track.fileName, track.fileSize), track);
     }
   }
   return (remote) =>
@@ -297,7 +298,7 @@ function buildTrackMatcher(local: readonly LocalTrack[]): (remote: LocalTrack) =
     byId.get(remote.id) ??
     byFileKey.get(remote.fileKey.toLowerCase()) ??
     (remote.fileSize > 0
-      ? byNameSize.get(`${remote.fileName.toLowerCase()}::${remote.fileSize}`)
+      ? byNameSize.get(nameSizeKey(remote.fileName, remote.fileSize))
       : undefined);
 }
 
