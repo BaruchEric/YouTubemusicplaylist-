@@ -238,6 +238,7 @@ export function PlaylistView({
                         href={`https://music.youtube.com/playlist?list=${encodeURIComponent(linkedPlaylistId)}`}
                         target="_blank"
                         rel="noopener noreferrer"
+                        title="A private playlist opens only in the Google account that owns it. If YouTube says it does not exist, switch accounts on YouTube."
                         className="inline-flex items-center gap-1.5 text-xs text-[#FF4D64] hover:text-[#FF7588] transition-colors"
                       >
                         <span>Open linked YouTube Music playlist</span>

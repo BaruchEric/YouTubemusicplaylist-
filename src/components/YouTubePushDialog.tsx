@@ -227,15 +227,23 @@ export function YouTubePushDialog({
               </p>
             )}
             {state.outcome.playlist && (
-              <a
-                href={buildYouTubeMusicPlaylistUrl(state.outcome.playlist.id)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 text-xs font-medium text-[#FF4D64] hover:text-white transition-colors"
-              >
-                <span>Open the playlist in YouTube Music</span>
-                <ExternalLink className="h-3.5 w-3.5" />
-              </a>
+              <>
+                <a
+                  href={buildYouTubeMusicPlaylistUrl(state.outcome.playlist.id)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-[#FF4D64] hover:text-white transition-colors"
+                >
+                  <span>Open the playlist in YouTube Music</span>
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+                {/* A browser signed in to several Google accounts opens the link with its
+                    first one, and YouTube hides a private playlist from every other account. */}
+                <p className="text-xs text-[#8B92A2]">
+                  The playlist is private. If YouTube says it does not exist, switch YouTube
+                  to the Google account you connected here.
+                </p>
+              </>
             )}
           </div>
         )}

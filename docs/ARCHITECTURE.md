@@ -100,6 +100,13 @@ Implemented across [`src/utils/googleAuth.ts`](../src/utils/googleAuth.ts), [`sr
 
 Quota is 10,000 units a day for the Google Cloud project. A list page costs 1 and every write costs 50, a move included. Placing a new song costs nothing extra, because the insert carries the position. Moves run last, so a push that hits the quota has spent it on the songs before their order.
 
+Asking Google for more is a compliance audit, the [Audit and Quota Extension Form](https://support.google.com/youtube/contact/yt_api_form). It wants a public privacy policy and terms of service, screenshots of both and of the consent screen, a way in for the reviewer or a screen recording of a whole push, an architecture diagram and a user flow diagram, and the applicant's legal name and address. CrateSync has none of the public pages, so the form has not been sent.
+
+The push was run against the real YouTube on 2026-11-26 from music.beric.ca: one push that created a private playlist of four songs, one that added a song at its place, removed one and moved one, and one that moved a song while a song added on YouTube by hand stayed where it was. Two things to know from that run:
+
+- Google shows "Google hasn't verified this app" before its consent page, because the project's OAuth client has not been through Google's verification. Advanced leads on to the consent page.
+- A browser signed in to several Google accounts opens a playlist link with the first one, and YouTube answers "The playlist does not exist" for a private playlist another account owns. The finished window and the playlist's link say so.
+
 ## How the client code is split
 
 `bun run build` writes about fifteen scripts where it used to write one of 1.7 MB.
