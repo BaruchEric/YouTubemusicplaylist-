@@ -810,8 +810,10 @@ export function ScannerView({
           </div>
         </div>
 
-        {/* Right: Folder Watch Controls + Add More Files */}
-        <div className="flex flex-wrap items-center gap-2 shrink-0">
+        {/* Right: Folder Watch Controls + Add More Files. The row is never wider than the
+            page, so its buttons wrap. Without the limit they stay on one line and the ones
+            past the right edge are cut off. */}
+        <div className="flex flex-wrap items-center gap-2 max-w-full">
           {folderRows.length > 0 && (
             <div className="flex flex-wrap items-center gap-2 mr-1">
               <label htmlFor="auto-watch-select" className="text-xs text-[#717786] whitespace-nowrap">
