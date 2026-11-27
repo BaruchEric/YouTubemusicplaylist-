@@ -3,7 +3,7 @@ import { CodeBoundary, ReloadButton } from './CodeBoundary';
 import { lazyComponent } from './lazyComponent';
 
 /**
- * The dashboard's charts. They need the chart libraries, about 750 kB of script, so the
+ * The dashboard's charts. With the chart libraries they are about 620 kB of script, so the
  * browser fetches them after the dashboard is on screen.
  */
 const charts = {
