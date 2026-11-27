@@ -20,6 +20,7 @@ import type {
   WatchedFolderInfo,
   WorkspaceView,
 } from '../types/music';
+import { LegalLinks } from './LegalLinks';
 import { formatRelativeTime } from '../utils/youtubeLinks';
 
 interface SidebarProps {
@@ -332,7 +333,7 @@ export function Sidebar({
       </div>
 
       {/* Direct YouTube Music Launcher */}
-      <div className="px-3 py-3 border-t border-white/[0.06] shrink-0">
+      <div className="px-3 py-3 border-t border-white/[0.06] shrink-0 space-y-2.5">
         <a
           href="https://music.youtube.com/library/playlists"
           target="_blank"
@@ -342,6 +343,7 @@ export function Sidebar({
           <span>Open YouTube Music</span>
           <ExternalLink className="h-3.5 w-3.5 text-[#FF4D64] shrink-0" />
         </a>
+        <LegalLinks />
       </div>
 
       {/* Watched Folder Summary (only rendered when a real folder has been scanned) */}

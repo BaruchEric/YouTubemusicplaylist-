@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CrateSync privacy policy</title>
+    <meta name="description" content="What CrateSync reads, what it keeps and where, and how to delete it." />
+    <link rel="stylesheet" href="site.css" />
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="./">CrateSync</a>
+      <nav>
+        <a href="privacy.html" aria-current="page">Privacy</a>
+        <a href="terms.html">Terms</a>
+        <a href="https://github.com/BaruchEric/YouTubemusicplaylist-">Source</a>
+      </nav>
+    </header>
+    <main>
+      <h1>Privacy policy</h1>
+      <p class="updated">Last updated 26 November 2026</p>
+
+      <div class="summary">
+        <p>
+          CrateSync keeps your music library in your own browser. It has no database of its own.
+          It talks to Google only when you ask it to: to sign you in, to push a playlist to
+          YouTube, to sync with your Google Drive, or to look up song details.
+        </p>
+        <p>It shows no ads, runs no analytics and sells nothing to anyone.</p>
+      </div>
+
+      <h2>Who runs CrateSync</h2>
+      <p>
+        CrateSync is a personal project. Its developer runs one copy at
+        <code>music.beric.ca</code> for private use, behind a sign-in. The
+        <a href="https://github.com/BaruchEric/YouTubemusicplaylist-">source code is public</a>.
+        Questions about this policy go to
+        <a href="mailto:cratesync@beric.ca">cratesync@beric.ca</a>.
+      </p>
+
+      <h2>What stays on your device</h2>
+      <p>CrateSync saves these in your browser's storage for the site, on the device you use:</p>
+      <ul>
+        <li>The list of your songs with their tags, cover art, file names and folder paths.</li>
+        <li>Copies of the audio files you add, so they still play after a reload.</li>
+        <li>Your playlists, smart playlists and the history of your syncs.</li>
+        <li>Play counts, skips and a play history of up to 2,000 entries.</li>
+        <li>Your settings, and a name for the device.</li>
+        <li>
+          The YouTube video ID you matched to a song, the ID and link of a YouTube playlist you
+          pushed to, the IDs of the videos CrateSync added to it, and the time of the last push.
+        </li>
+      </ul>
+      <p>
+        None of this is sent to the CrateSync server. It leaves your device only in the cases
+        below.
+      </p>
+
+      <h2>Signing in with Google</h2>
+      <p>
+        Sign-in runs on Firebase Authentication, a Google service. When you sign in, Google
+        gives CrateSync your name, email address, profile picture and an account ID. Firebase
+        keeps an account record with those details and your sign-in times. CrateSync uses the
+        email address to show which account is connected and to decide who may use the song
+        lookups.
+      </p>
+      <p>
+        Firebase App Check with reCAPTCHA Enterprise checks that a sign-in comes from the real
+        app. reCAPTCHA collects device and browser details under the
+        <a href="https://policies.google.com/privacy">Google Privacy Policy</a>.
+      </p>
+
+      <h2>YouTube</h2>
+      <p>
+        CrateSync uses YouTube API Services to send a playlist to your YouTube account. It asks
+        Google for access to your YouTube account when you click Push to YouTube, and at no
+        other time. With that access it does five things:
+      </p>
+      <ul>
+        <li>It creates a private playlist on your account when the playlist has none yet.</li>
+        <li>
+          It reads the entries of the playlist it pushes to. It asks only for each entry's ID,
+          its video ID and its position.
+        </li>
+        <li>It adds the videos matched to your songs.</li>
+        <li>It moves a video that is out of order.</li>
+        <li>It removes a video, and only one that an earlier push from CrateSync added.</li>
+      </ul>
+      <p>
+        CrateSync does not read your watch history, your subscriptions, your comments, your
+        liked videos or your channel details. It does not download audio or video from YouTube.
+      </p>
+      <p>
+        The access token from Google stays in the page's memory. CrateSync never writes it to
+        storage, drops it after 50 minutes, and loses it when you reload the page. CrateSync
+        gets no token that would let it act while you are away.
+      </p>
+      <p>
+        From YouTube, CrateSync keeps only the playlist ID and the video IDs listed under
+        "What stays on your device". It reads the playlist again on every push.
+      </p>
+      <p>
+        When a song has no audio file on your device, CrateSync can play its match in YouTube's
+        embedded player, and it shows video thumbnails from YouTube. YouTube serves both, so
+        YouTube sees your IP address and may set cookies.
+      </p>
+      <p>
+        Your use of YouTube through CrateSync falls under the
+        <a href="https://www.youtube.com/t/terms">YouTube Terms of Service</a> and the
+        <a href="https://policies.google.com/privacy">Google Privacy Policy</a>.
+      </p>
+
+      <h2>Google Drive</h2>
+      <p>Drive sync is optional. When you connect Drive, CrateSync asks Google for two kinds of access:</p>
+      <ul>
+        <li>
+          Read access to your Drive. CrateSync uses it to find and list audio files and
+          playlist files, and to download the ones you play, cache or import.
+        </li>
+        <li>
+          Access to the files CrateSync itself creates: a folder named "CrateSync Library", the
+          audio you upload into it, and a library file named
+          <code>cratesync-source-of-truth.json</code>.
+        </li>
+      </ul>
+      <p>
+        The library file holds your song list, your playlists, your sync history, your device
+        names and your folder mappings, so that your other devices can pull them. It sits in
+        your own Drive. CrateSync changes or deletes only the files it created there, and only
+        when you ask.
+      </p>
+      <p>The Drive access token also stays in memory and is gone after a reload.</p>
+
+      <h2>Song lookups</h2>
+      <p>
+        Two optional tools, the metadata lookup and the genre classifier, send details of the
+        songs you pick to the CrateSync server: file name, folder path, current tags and
+        length. The server passes them to Google's Gemini API, and the metadata lookup also
+        runs a Google search through it. The server sends the answer back and keeps no copy.
+      </p>
+      <p>
+        To limit use, the server checks your sign-in and counts your requests in memory. It
+        forgets the count when it restarts.
+      </p>
+
+      <h2>The server and the network in front of it</h2>
+      <p>
+        The CrateSync server sends the app to your browser and answers the song lookups. It
+        stores no library data and writes no log of requests. Cloudflare and a sign-in gate sit
+        in front of it. Like any web host they see your IP address, the time and the address
+        you asked for, and the gate sets a cookie to keep you signed in.
+      </p>
+      <p>CrateSync loads its fonts from Google Fonts, which also sees your IP address.</p>
+
+      <h2>Who else gets your data</h2>
+      <p>
+        Nobody beyond the Google services named above, and those only when you use the feature
+        that needs them. CrateSync does not sell, rent or trade data, and it does not use it
+        for advertising.
+      </p>
+
+      <h2>Deleting your data and taking back access</h2>
+      <ul>
+        <li>
+          <strong>On your device.</strong> Delete a song or a playlist in CrateSync, or clear
+          the site's data in your browser to remove everything at once.
+        </li>
+        <li>
+          <strong>In your Drive.</strong> Delete the "CrateSync Library" folder in Google Drive.
+        </li>
+        <li>
+          <strong>On YouTube.</strong> A pushed playlist is an ordinary playlist on your
+          account. Delete it on YouTube. CrateSync holds no other copy.
+        </li>
+        <li>
+          <strong>Your sign-in record.</strong> Write to
+          <a href="mailto:cratesync@beric.ca">cratesync@beric.ca</a> from the address you signed
+          in with. The record is deleted within 30 days.
+        </li>
+        <li>
+          <strong>Access to your Google account.</strong> You can revoke CrateSync's access at
+          any time on the Google security settings page,
+          <a href="https://security.google.com/settings/security/permissions">security.google.com/settings/security/permissions</a>.
+        </li>
+      </ul>
+
+      <h2>Children</h2>
+      <p>CrateSync is not meant for children under 13 and does not knowingly hold their data.</p>
+
+      <h2>Changes to this policy</h2>
+      <p>
+        The date at the top changes with the text. Every earlier version is in the
+        <a href="https://github.com/BaruchEric/YouTubemusicplaylist-/commits/main/docs/privacy.html">page's history</a>.
+      </p>
+    </main>
+    <footer>
+      CrateSync is not affiliated with YouTube or Google. YouTube and YouTube Music are
+      trademarks of Google LLC.
+    </footer>
+  </body>
+</html>

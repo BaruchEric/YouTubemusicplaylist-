@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';
 import { YouTubePushDialog } from '../src/components/YouTubePushDialog';
+import { PRIVACY_URL, TERMS_URL, YOUTUBE_TERMS_URL } from '../src/utils/legalLinks';
 import type { YouTubePushEstimate, YouTubePushOutcome } from '../src/utils/youtubePush';
 
 const estimate: YouTubePushEstimate = {
@@ -43,6 +44,31 @@ function finishedWindow(playlist: YouTubePushOutcome['playlist']): string {
     })
   );
 }
+
+function reviewWindow(): string {
+  return renderToString(
+    createElement(YouTubePushDialog, {
+      playlistName: 'Road trip',
+      estimate,
+      state: { phase: 'review', connectError: null },
+      isConnected: false,
+      onStart: () => {},
+      onStop: () => {},
+      onClose: () => {},
+    })
+  );
+}
+
+describe('the push review window', () => {
+  test('names YouTube API Services and links the terms a push falls under', () => {
+    const html = reviewWindow();
+
+    expect(html).toContain('YouTube API Services');
+    expect(html).toContain(`href="${YOUTUBE_TERMS_URL}"`);
+    expect(html).toContain(`href="${TERMS_URL}"`);
+    expect(html).toContain(`href="${PRIVACY_URL}"`);
+  });
+});
 
 const ACCOUNT_HINT = 'switch YouTube to the Google account you connected';
 

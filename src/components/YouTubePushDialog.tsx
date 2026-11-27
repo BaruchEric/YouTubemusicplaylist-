@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { ExternalLink, X } from 'lucide-react';
+import { PRIVACY_URL, TERMS_URL, YOUTUBE_TERMS_URL } from '../utils/legalLinks';
 import { buildYouTubeMusicPlaylistUrl } from '../utils/youtubeLinks';
 import {
   describeYouTubePush,
@@ -27,6 +28,8 @@ interface YouTubePushDialogProps {
   onStop: () => void;
   onClose: () => void;
 }
+
+const LINK = 'underline underline-offset-2 hover:text-white transition-colors';
 
 function songs(n: number): string {
   return `${n} song${n === 1 ? '' : 's'}`;
@@ -162,6 +165,21 @@ export function YouTubePushDialog({
               The songs go in this playlist&apos;s order, and a song that is out of place on
               YouTube is moved. CrateSync takes a song off YouTube only when an earlier push put
               it there. Songs you added on YouTube yourself stay and are never moved.
+            </p>
+            <p className="text-xs text-[#8B92A2]">
+              A push uses YouTube API Services. By pushing you agree to the{' '}
+              <a href={YOUTUBE_TERMS_URL} target="_blank" rel="noopener noreferrer" className={LINK}>
+                YouTube Terms of Service
+              </a>{' '}
+              and to CrateSync&apos;s{' '}
+              <a href={TERMS_URL} target="_blank" rel="noopener noreferrer" className={LINK}>
+                terms
+              </a>
+              . The{' '}
+              <a href={PRIVACY_URL} target="_blank" rel="noopener noreferrer" className={LINK}>
+                privacy policy
+              </a>{' '}
+              says what CrateSync keeps.
             </p>
             {estimate.days > 1 && (
               <p className="text-xs text-[#FDE68A]">
