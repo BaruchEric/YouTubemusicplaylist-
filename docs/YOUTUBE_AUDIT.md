@@ -2,7 +2,7 @@
 
 This is what Google was told about CrateSync on the [Audit and Quota Extension Form](https://support.google.com/youtube/contact/yt_api_form). The form's attestations include telling YouTube in writing before the use of the API changes, so a change to what CrateSync calls or keeps goes here and to Google first.
 
-Status on 26 November 2026: sections 1 to 6 are filled in. The attestations in section 7 and the Submit button are the applicant's to tick and press. Put the date here once it is sent.
+Status on 26 November 2026: sections 1 to 6 are filled in with the texts and files below. The demo-account acknowledgment in section 4, the attestations in section 7 and the Submit button are the applicant's to tick and press. Put the date here once it is sent.
 
 ## Answers
 
@@ -26,7 +26,7 @@ Status on 26 November 2026: sections 1 to 6 are filled in. The attestations in s
 | Sign-in with Google | Yes |
 | Expected volume | Fewer than 1,000 requests per day |
 | Endpoints | `search.list`, `videos.list`, `playlists.insert`, `playlistItems.list`, `playlistItems.insert`, `playlistItems.update`, `playlistItems.delete` |
-| Quota asked for | 40,000 units a day |
+| Quota asked for | 40,000 units a day. Ticking `search.list` opens a second pair of fields for that method alone, and they name the same 40,000 |
 
 The legal name, the address and the contact email are on the form and stay out of this repo.
 
@@ -50,7 +50,15 @@ The legal name, the address and the contact email are on the form and stay out o
 
 ## Quota justification, as sent
 
-> CrateSync has one user, me. My music library holds 2,568 songs and none is linked to a video yet. Finding the videos takes one search.list call per song at 100 units, 256,800 units in all. Sending the songs to YouTube takes one playlistItems.insert per song at 50 units, 128,400 units. Together the first sync costs 385,200 units. At the default 10,000 units a day holds 100 searches or 200 inserts, so the first sync takes 39 days. With 40,000 units a day it takes 10 days, at no more than 400 searches or 800 writes on a day. After the first sync I expect fewer than 100 requests on most days, for new songs and for re-ordering a playlist. CrateSync keeps its own use down. A search run is capped at one day's quota and shows its cost before it starts. A song searched in the last 30 days is not searched again. Reading one of my playlists matches many songs for 1 unit per 50 videos. The 30-day refresh of stored video IDs costs 1 unit per 50 videos. A push counts its writes before it starts, and both a search and a push stop when YouTube reports that the quota is used up. CrateSync does not call videos.insert.
+> CrateSync has one user, me. My music library holds 2,568 songs and 37 are linked to a video so far. Finding the videos for the other 2,531 takes one search.list call per song at 100 units, 253,100 units in all. Sending the songs to YouTube takes one playlistItems.insert per song at 50 units, 128,400 units. Together the first sync costs 381,500 units. The default 10,000 units a day holds 100 searches or 200 inserts, so the first sync takes 39 days. With 40,000 units a day it takes 10 days, at no more than 400 searches or 800 writes on a day. After the first sync I expect fewer than 100 requests on most days, for new songs and for re-ordering a playlist. CrateSync keeps its own use down. A search run is capped at one day's quota and shows its cost before it starts. A song searched in the last 30 days is not searched again. Reading one of my playlists matches many songs for 1 unit per 50 videos. The 30-day refresh of stored video IDs costs 1 unit per 50 videos. A push counts its writes before it starts, and both a search and a push stop when YouTube reports that the quota is used up. CrateSync does not call videos.insert.
+
+The 37 songs were linked on 26 November 2026 by reading the liked-videos playlist, which costs 1 unit per 50 videos and no search.
+
+## search.list justification, as sent
+
+The form asks for the `search.list` quota in its own two fields. The quota field holds 40,000.
+
+> This is part of the 40,000 units above, not on top of it. search.list is called once per song that has no video yet, with the song's artist and title, limited to music videos, at 100 units a call. 2,531 of my 2,568 songs still need a video, which is 253,100 units. With 40,000 units a day that is 400 searches a day for 7 days, and on those days nothing is left for a push. After that search.list runs only for songs I add to the library, a few a month. CrateSync keeps the number down. A song searched in the last 30 days is not searched again. A search run is capped at one day's quota and shows its cost before it starts. Reading one of my own playlists matches many songs for 1 unit per 50 videos without a search.
 
 ## Access note, as sent
 
@@ -60,19 +68,19 @@ The legal name, the address and the contact email are on the form and stay out o
 
 | Form field | File | What it shows |
 | --- | --- | --- |
-| Privacy policy screenshots | `06-privacy-policy-full-page.png` | The whole of `privacy.html`, with the YouTube section, the Google Privacy Policy link and the deletion section |
-| Homepage screenshot | `01-home-with-privacy-and-terms-links.jpg` | The dashboard with the Privacy and Terms links at the foot of the sidebar |
-| Terms of service | `07-terms-of-use-full-page.png` | The whole of `terms.html` |
-| Conditional evidence | `09-push-to-youtube-screens.png` | The review window, the finished window, the playlist reading In sync and the playlist on YouTube |
+| Privacy policy screenshots | `06-privacy-policy-full-page.png` | The whole of `privacy.html` under the browser's address bar, with the YouTube section, the Google Privacy Policy link and the deletion section |
+| Homepage screenshot | `01-home-with-privacy-and-terms-links.png` | The Chrome window on `music.beric.ca` with the address bar, and the Privacy and Terms links at the foot of the sidebar |
+| Terms of service | `07-terms-of-use-full-page.png` | The whole of `terms.html` under the browser's address bar |
+| Conditional evidence | `09-youtube-api-screens.png` | Six captioned screens in one image. Push to YouTube: the review window, the finished window, the playlist reading In sync and the playlist on YouTube. Match YouTube: the window before a search with its quota cost, and the review list of proposed videos |
 | Architecture diagram | `architecture-diagram.png` | [`diagrams/architecture.mmd`](diagrams/architecture.mmd), rendered |
-| User flow diagram | `user-flow-diagram.png` | [`diagrams/push-user-flow.mmd`](diagrams/push-user-flow.mmd) above [`diagrams/match-user-flow.mmd`](diagrams/match-user-flow.mmd), rendered and joined into one image |
+| User flow diagram | `user-flow-diagram.png` | [`diagrams/match-user-flow.mmd`](diagrams/match-user-flow.mmd) on the left and [`diagrams/push-user-flow.mmd`](diagrams/push-user-flow.mmd) on the right, rendered and joined into one image |
 | Other supporting materials | `screencast-push-to-youtube.mp4` | A recording of two pushes, a removal and an addition, then the screenshot of the playlist on YouTube |
 
 The screenshots and the recording show a signed-in account, so they are kept outside the repo. The three diagrams are in [`diagrams/`](diagrams/). Render one with `bunx --bun @mermaid-js/mermaid-cli -i X.mmd -o X.png -b white -s 2 -q`.
 
 ## Where the evidence falls short of what the form asks
 
-- The form asks for the browser address bar in web screenshots. These were taken from inside the page and have none.
+- The form asks for the browser address bar in web screenshots. The privacy page, the terms page, the home page and the two Match YouTube screens have it. The four Push to YouTube screens were taken from inside the page and have none.
 - There is no screenshot of Google's consent screen. Google's window opens outside the tab and closes by itself once access is given.
 - The recording ends on a still screenshot of the playlist on YouTube. It does not show the browser going there.
 
