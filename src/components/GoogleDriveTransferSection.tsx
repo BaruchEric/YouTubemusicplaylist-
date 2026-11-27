@@ -18,6 +18,7 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  Tags,
   Trash2,
   X,
 } from 'lucide-react';
@@ -45,6 +46,7 @@ import {
   createDriveFolder,
   deleteDriveFile,
   downloadDriveAudioBlob,
+  downloadDriveFileRange,
   downloadDriveFileText,
   DriveApiError,
   findOrCreateCrateSyncFolder,
@@ -69,6 +71,15 @@ import {
   type ManifestFolderState,
 } from '../utils/folderMappings';
 import { clearDeviceCacheMessage, summarizeDeviceCache } from '../utils/deviceCache';
+import {
+  countTracksNeedingTagRead,
+  describeTagReadProgress,
+  describeTagReadResult,
+  needsTagRead,
+  readDriveTrackTags,
+  type TagReadProgress,
+  type TagReadUpdates,
+} from '../utils/driveTagReader';
 import {
   describeCarriedOver,
   type LibraryPushMerge,
@@ -138,6 +149,8 @@ interface GoogleDriveTransferSectionProps {
     updates: Array<{ trackId: string; driveFileId: string; driveModifiedTime: string; drivePath: string }>
   ) => void;
   onCacheDriveTrackAudio: (trackId: string, blob: Blob, driveFile?: DriveFileItem) => Promise<void>;
+  /** Saves the fields a tag read changed, by track id. */
+  onApplyTrackTagUpdates: (updates: TagReadUpdates) => void;
   onEvictTrackCache: (fileKeys: string[]) => Promise<void>;
   onClearAllDeviceCache: () => Promise<void>;
   onPlayTrack: (trackId: string, queueIds?: string[]) => void;
@@ -267,6 +280,7 @@ export function GoogleDriveTransferSection({
   onSyncFromDriveSourceOfTruth,
   onLinkUploadedDriveTracks,
   onCacheDriveTrackAudio,
+  onApplyTrackTagUpdates,
   onEvictTrackCache,
   onClearAllDeviceCache,
   onPlayTrack,
@@ -348,6 +362,8 @@ export function GoogleDriveTransferSection({
     activeItem: string;
   } | null>(null);
   const cancelBatchRef = useRef(false);
+  const [tagReadProgress, setTagReadProgress] = useState<TagReadProgress | null>(null);
+  const tagReadAbortRef = useRef<AbortController | null>(null);
 
   const [cachingTrackId, setCachingTrackId] = useState<string | null>(null);
   const [importingFileId, setImportingFileId] = useState<string | null>(null);
@@ -486,10 +502,11 @@ export function GoogleDriveTransferSection({
     ]
   );
 
-  // Abort any in-flight Drive scan on unmount
+  // Abort any in-flight Drive scan or tag read on unmount
   useEffect(() => {
     return () => {
       scanAbortRef.current?.abort();
+      tagReadAbortRef.current?.abort();
     };
   }, []);
 
@@ -648,6 +665,9 @@ export function GoogleDriveTransferSection({
     () => tracks.filter((t) => !t.driveFileId && hasPlayableFile(t.fileKey)),
     [tracks, hasPlayableFile]
   );
+
+  // Drive songs still holding what the listing guessed from their file name and folders
+  const tagReadCount = useMemo(() => countTracksNeedingTagRead(tracks), [tracks]);
 
   const cachedSongsCount = useMemo(
     () => tracks.filter((t) => hasPlayableFile(t.fileKey)).length,
@@ -883,6 +903,63 @@ export function GoogleDriveTransferSection({
       setBatchProgress(null);
       setIsMutating(false);
       cancelBatchRef.current = false;
+    }
+  };
+
+  // Read tags, cover art and duration from the first bytes of each Drive song
+  const handleReadTags = async () => {
+    if (!getDriveAccessToken()) {
+      setHasAccessToken(false);
+      return;
+    }
+    const targets = tracks.filter(needsTagRead);
+    if (targets.length === 0) return;
+
+    const controller = new AbortController();
+    tagReadAbortRef.current = controller;
+    setIsMutating(true);
+    setStatusMessage(null);
+    setTagReadProgress({ done: 0, total: targets.length, bytes: 0 });
+
+    try {
+      const result = await readDriveTrackTags({
+        tracks: targets,
+        signal: controller.signal,
+        // Each read looks the token up again, so a long run picks up a renewed one.
+        readRange: (fileId, start, end) => {
+          const token = getDriveAccessToken();
+          if (!token) {
+            return Promise.reject(new DriveApiError('The Google Drive session ended.', 401));
+          }
+          return downloadDriveFileRange(token, fileId, start, end, undefined, controller.signal);
+        },
+        localBlob: async (track) =>
+          hasPlayableFile(track.fileKey) ? getCachedAudioBlob(track.fileKey) : null,
+        onProgress: setTagReadProgress,
+        onBatch: onApplyTrackTagUpdates,
+      });
+
+      if (result.stopped?.reason === 'session-ended') {
+        clearDriveAccessToken();
+        setHasAccessToken(false);
+      }
+      const summary = describeTagReadResult(result);
+      const stoppedByDrive = result.stopped !== null && result.stopped.reason !== 'stopped';
+      setStatusMessage({
+        tone: stoppedByDrive ? 'error' : result.stopped ? 'info' : 'success',
+        text: summary,
+      });
+      onNotify?.({
+        title: result.stopped ? 'Tag reading stopped' : 'Tags read from Google Drive',
+        description: summary,
+        tone: stoppedByDrive ? 'warning' : result.stopped ? 'neutral' : 'success',
+      });
+    } catch (err) {
+      handleDriveApiError(err, 'Reading tags from Google Drive failed.');
+    } finally {
+      tagReadAbortRef.current = null;
+      setTagReadProgress(null);
+      setIsMutating(false);
     }
   };
 
@@ -1773,6 +1850,41 @@ export function GoogleDriveTransferSection({
           </div>
         )}
 
+        {/* Tag read progress */}
+        {tagReadProgress && (
+          <div className="p-3.5 rounded-md bg-[#0B0C0E] border border-white/[0.1] space-y-2">
+            <div className="flex items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2 min-w-0">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-[#FF1F3D] shrink-0" />
+                <span className="text-white font-medium truncate">
+                  {describeTagReadProgress(tagReadProgress)}
+                </span>
+              </div>
+              <div className="flex items-center gap-3 shrink-0">
+                <span className="font-mono tabular-nums text-[#9CA3AF]">
+                  {formatFileSize(tagReadProgress.bytes)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => tagReadAbortRef.current?.abort()}
+                  className="inline-flex items-center gap-1 text-[#FCA5A5] hover:text-white transition-colors"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  <span>Stop</span>
+                </button>
+              </div>
+            </div>
+            <div className="h-1.5 w-full rounded-full bg-white/[0.08] overflow-hidden">
+              <div
+                className="h-full bg-[#FF1F3D] transition-all duration-150"
+                style={{
+                  width: `${Math.round((tagReadProgress.done / Math.max(1, tagReadProgress.total)) * 100)}%`,
+                }}
+              />
+            </div>
+          </div>
+        )}
+
         {authError && (
           <div className="px-3.5 py-2.5 rounded-md bg-[#2A1216] border border-[#FF1F3D]/30 text-xs text-[#FCA5A5]">
             {authError}
@@ -1840,6 +1952,17 @@ export function GoogleDriveTransferSection({
                 <span>
                   Cache Offline ({uncachedDriveTracks.length})
                 </span>
+              </button>
+
+              <button
+                type="button"
+                disabled={isMutating || tagReadCount === 0}
+                onClick={() => void handleReadTags()}
+                title="Reads the title, artist, album, cover art and length of each Google Drive song from the start of its file, without downloading the song."
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md text-xs font-medium text-white bg-[#1B1F28] border border-white/[0.1] hover:bg-[#232834] disabled:opacity-45 transition-colors whitespace-nowrap"
+              >
+                <Tags className="h-3.5 w-3.5 text-[#22C55E]" />
+                <span>Read Tags ({tagReadCount})</span>
               </button>
 
               {storedAudioKeys.size > 0 && (
