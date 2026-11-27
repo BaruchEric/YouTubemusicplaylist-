@@ -41,6 +41,7 @@ import {
 import { isSha256Hash } from '../utils/audioMetadata';
 import { computeTrackStatistics } from '../utils/genreInference';
 import { evaluateSmartTrackSearch } from '../utils/smartSearch';
+import type { FolderRow } from '../utils/watchedFolders';
 import {
   buildTrackYouTubeMusicUrl,
   formatDuration,
@@ -56,6 +57,7 @@ import {
 import { DuplicateFinderPanel } from './DuplicateFinderPanel';
 import { LibraryCleanupPanel } from './LibraryCleanupPanel';
 import { TrackStatisticsPanel } from './TrackStatisticsPanel';
+import { WatchedFoldersPanel } from './WatchedFoldersPanel';
 
 const STUDIO_BANNER_SRC = '/src/assets/images/studio_audio_banner_1795114389740.jpg';
 
@@ -74,6 +76,8 @@ interface ScannerViewProps {
   initialOpenDuplicates?: boolean;
   initialOpenIntegrity?: boolean;
   watchedFolder: WatchedFolderInfo | null;
+  /** The folders picked with the folder chooser, one row each. */
+  folderRows: FolderRow[];
   autoWatchIntervalSec: 0 | 30 | 120 | 300;
   isScanning: boolean;
   scanProgress: { processed: number; total: number } | null;
@@ -90,6 +94,10 @@ interface ScannerViewProps {
   onPickFilesFallback: () => void;
   onDropTransfer: (dataTransfer: DataTransfer) => void;
   onRescanFolder: () => void;
+  /** Asks the browser for one picked folder, from a click on its row. */
+  onAllowFolder: (folderId: string) => void;
+  /** Asks to take one picked folder off the list. Its songs stay in the library. */
+  onRemoveFolder: (folderId: string) => void;
   onChangeAutoWatch: (sec: 0 | 30 | 120 | 300) => void;
   onComputeMissingHashes: () => void;
   onRunIntegrityScan: () => void;
@@ -120,6 +128,7 @@ export function ScannerView({
   initialOpenDuplicates = false,
   initialOpenIntegrity = false,
   watchedFolder,
+  folderRows,
   autoWatchIntervalSec,
   isScanning,
   scanProgress,
@@ -136,6 +145,8 @@ export function ScannerView({
   onPickFilesFallback,
   onDropTransfer,
   onRescanFolder,
+  onAllowFolder,
+  onRemoveFolder,
   onChangeAutoWatch,
   onComputeMissingHashes,
   onRunIntegrityScan,
@@ -159,6 +170,8 @@ export function ScannerView({
   const [groupByGenre, setGroupByGenre] = useState<boolean>(initialGroupByGenre);
   const [collapsedGenres, setCollapsedGenres] = useState<Set<string>>(new Set());
   const [showTrackStats, setShowTrackStats] = useState<boolean>(false);
+  const [showWatchedFolders, setShowWatchedFolders] = useState<boolean>(false);
+  const foldersNeedingAccess = folderRows.filter((row) => row.state === 'needs-access').length;
   const [showLibraryCleanup, setShowLibraryCleanup] = useState<boolean>(initialOpenCleanup);
 
   useEffect(() => {
@@ -496,6 +509,18 @@ export function ScannerView({
             </div>
           </div>
 
+          {/* A picked folder with no audio in it is still watched. It shows here, where it
+              can be allowed or removed while the library is empty. */}
+          {folderRows.length > 0 && (
+            <WatchedFoldersPanel
+              rows={folderRows}
+              isScanning={isScanning}
+              onAllowFolder={onAllowFolder}
+              onRemoveFolder={onRemoveFolder}
+              onAddFolder={onMountFolder}
+            />
+          )}
+
           {/* Primary Drop Zone & Folder Actions */}
           <div
             className={`rounded-xl border border-dashed transition-colors p-8 sm:p-10 text-center ${
@@ -787,8 +812,8 @@ export function ScannerView({
 
         {/* Right: Folder Watch Controls + Add More Files */}
         <div className="flex flex-wrap items-center gap-2 shrink-0">
-          {watchedFolder?.hasLiveHandle && (
-            <div className="flex items-center gap-2 mr-1">
+          {folderRows.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 mr-1">
               <label htmlFor="auto-watch-select" className="text-xs text-[#717786] whitespace-nowrap">
                 Auto-watch:
               </label>
@@ -813,6 +838,26 @@ export function ScannerView({
               >
                 <RefreshCw className={`h-3.5 w-3.5 ${isScanning ? 'animate-spin' : ''}`} />
                 <span>Re-scan</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowWatchedFolders((prev) => !prev)}
+                aria-expanded={showWatchedFolders}
+                title={
+                  foldersNeedingAccess > 0
+                    ? 'A folder needs access. Open the list to allow it'
+                    : 'The folders CrateSync plays your songs from'
+                }
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium border transition-colors whitespace-nowrap ${
+                  showWatchedFolders
+                    ? 'text-white bg-[#1E222D] border-[#FF1F3D]/60'
+                    : foldersNeedingAccess > 0
+                      ? 'text-[#FCD34D] bg-[#161920] border-[#F59E0B]/35 hover:bg-[#1E222B]'
+                      : 'text-[#D1D5DB] bg-[#161920] border-white/[0.09] hover:text-white hover:bg-[#1E222B]'
+                }`}
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+                <span>Folders ({folderRows.length})</span>
               </button>
             </div>
           )}
@@ -1023,6 +1068,20 @@ export function ScannerView({
           </button>
         </div>
       </div>
+
+      {/* The folders picked with the folder chooser */}
+      {showWatchedFolders && (
+        <div className="mx-5 sm:mx-6 my-4 shrink-0">
+          <WatchedFoldersPanel
+            rows={folderRows}
+            isScanning={isScanning}
+            onAllowFolder={onAllowFolder}
+            onRemoveFolder={onRemoveFolder}
+            onAddFolder={onMountFolder}
+            onClose={() => setShowWatchedFolders(false)}
+          />
+        </div>
+      )}
 
       {/* Bulk Selection Bar */}
       {selectedArray.length > 0 && (
