@@ -7,7 +7,11 @@ interface TopBarProps {
   subLabel?: string;
   isScanning: boolean;
   watcherStatus: DirectoryWatcherStatus;
-  watchedFolderName?: string | null;
+  /**
+   * The picked folders in words, such as `"Music"` or `2 folders`. While the watcher is
+   * paused it names the folders that need access.
+   */
+  watchedFolderLabel: string;
   autoWatchIntervalSec: WatchIntervalSec;
   scanProgress?: { processed: number; total: number } | null;
   recentScanErrorCount?: number;
@@ -15,7 +19,10 @@ interface TopBarProps {
   onOpenMobileMenu: () => void;
   onOpenSmartSearch: () => void;
   onOpenScanLogs: () => void;
-  /** Rescans from a click, which lets the browser ask for folder access again. */
+  /**
+   * Rescans from a click, which lets the browser ask for folder access again. It asks for
+   * one folder at a time, in list order, while the click is still fresh.
+   */
   onResumeWatch: () => void;
   onPickFolder: () => void;
   onPickFiles: () => void;
@@ -34,7 +41,7 @@ export function TopBar({
   subLabel,
   isScanning,
   watcherStatus,
-  watchedFolderName,
+  watchedFolderLabel,
   autoWatchIntervalSec,
   scanProgress,
   recentScanErrorCount = 0,
@@ -62,9 +69,9 @@ export function TopBar({
         ? `Syncing files (${scanProgress.processed}/${scanProgress.total}) — click to view scan logs`
         : 'Background indexer is syncing files — click to view scan logs'
       : watcherStatus === 'watching'
-        ? `Watching "${watchedFolderName ?? 'folder'}" every ${formatWatchCadence(autoWatchIntervalSec)} — click to view scan logs`
+        ? `Watching ${watchedFolderLabel} every ${formatWatchCadence(autoWatchIntervalSec)} — click to view scan logs`
         : watcherStatus === 'paused'
-          ? `Folder watch is paused. Click to let CrateSync read "${watchedFolderName ?? 'the folder'}" again`
+          ? `Folder watch is paused. Click to let CrateSync read ${watchedFolderLabel} again`
           : 'Background directory watcher is idle — click to view scan logs';
 
   return (
