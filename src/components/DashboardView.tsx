@@ -44,7 +44,6 @@ import {
   triggerFileDownload,
 } from '../utils/youtubeLinks';
 import { AlbumArtGallery } from './AlbumArtGallery';
-import { DailyListeningChart } from './DailyListeningChart';
 import {
   DashboardJumpMenu,
   type DashboardSectionId,
@@ -52,13 +51,17 @@ import {
 } from './DashboardJumpMenu';
 import { DashboardQuickActionsMenu } from './DashboardQuickActionsMenu';
 import { DashboardSmartFilter } from './DashboardSmartFilter';
-import { GenreDistributionChart } from './GenreDistributionChart';
-import { GlobalGenreDistributionChart } from './GlobalGenreDistributionChart';
-import { ListeningActivityHeatmap } from './ListeningActivityHeatmap';
+import {
+  ChartBoundary,
+  DailyListeningChart,
+  GenreDistributionChart,
+  GlobalGenreDistributionChart,
+  ListeningActivityHeatmap,
+  WeeklyListeningHabitsChart,
+  WeeklyTracksAddedChart,
+} from './LazyCharts';
 import { ListeningActivitySection } from './ListeningActivitySection';
 import { RecommendedForYou } from './RecommendedForYou';
-import { WeeklyListeningHabitsChart } from './WeeklyListeningHabitsChart';
-import { WeeklyTracksAddedChart } from './WeeklyTracksAddedChart';
 
 const STUDIO_BANNER_SRC = '/src/assets/images/studio_audio_banner_1795114389740.jpg';
 
@@ -984,20 +987,24 @@ export function DashboardView({
           className={`grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch ${sectionHighlightClass('genres')}`}
         >
           {/* Left (7 cols): Recharts Genre Distribution Pie Chart */}
-          <GenreDistributionChart
-            tracks={tracks}
-            allStats={allStats}
-            playStats={playStats}
-            activeGenre={activeGenre}
-            onSelectGenre={setSelectedGenre}
-            onOpenScanner={onOpenScanner}
-            onPlayList={onPlayList}
-            onCreatePlaylistFromTracks={onCreatePlaylistFromTracks}
-            onOpenBatchTagEditor={onOpenBatchTagEditor}
-            onApplyTrackGenres={onApplyTrackGenres}
-            onMountFolder={onMountFolder}
-            onPickFilesFallback={onPickFilesFallback}
-          />
+          {/* Each chart card below holds its place at the height it has with songs in the
+              library, measured at 390px and 1440px wide. */}
+          <ChartBoundary className="lg:col-span-7 min-h-[812px] lg:min-h-[550px]">
+            <GenreDistributionChart
+              tracks={tracks}
+              allStats={allStats}
+              playStats={playStats}
+              activeGenre={activeGenre}
+              onSelectGenre={setSelectedGenre}
+              onOpenScanner={onOpenScanner}
+              onPlayList={onPlayList}
+              onCreatePlaylistFromTracks={onCreatePlaylistFromTracks}
+              onOpenBatchTagEditor={onOpenBatchTagEditor}
+              onApplyTrackGenres={onApplyTrackGenres}
+              onMountFolder={onMountFolder}
+              onPickFilesFallback={onPickFilesFallback}
+            />
+          </ChartBoundary>
 
           {/* Right (5 cols): Track Statistics */}
           <section className="lg:col-span-5 rounded-lg border border-white/[0.08] bg-[#12141A] p-5 flex flex-col justify-between gap-5">
@@ -1165,17 +1172,19 @@ export function DashboardView({
           id="dash-section-global-genres"
           className={sectionHighlightClass('global-genres')}
         >
-          <GlobalGenreDistributionChart
-            tracks={tracks}
-            allStats={allStats}
-            activeGenre={activeGenre}
-            onSelectGenre={setSelectedGenre}
-            onPlayList={onPlayList}
-            onCreatePlaylistFromTracks={onCreatePlaylistFromTracks}
-            onOpenScanner={onOpenScanner}
-            onMountFolder={onMountFolder}
-            onPickFilesFallback={onPickFilesFallback}
-          />
+          <ChartBoundary className="min-h-[663px] lg:min-h-[459px]">
+            <GlobalGenreDistributionChart
+              tracks={tracks}
+              allStats={allStats}
+              activeGenre={activeGenre}
+              onSelectGenre={setSelectedGenre}
+              onPlayList={onPlayList}
+              onCreatePlaylistFromTracks={onCreatePlaylistFromTracks}
+              onOpenScanner={onOpenScanner}
+              onMountFolder={onMountFolder}
+              onPickFilesFallback={onPickFilesFallback}
+            />
+          </ChartBoundary>
         </div>
 
         {/* Recommended for You (Genre-Matched Playlist Suggestions) */}
@@ -1205,17 +1214,19 @@ export function DashboardView({
           id="dash-section-daily-listening"
           className={sectionHighlightClass('daily-listening')}
         >
-          <DailyListeningChart
-            tracks={scopedTracks}
-            trackMap={trackMap}
-            activeGenre={activeGenre}
-            playHistory={playHistory}
-            activePlayingTrackId={activePlayingTrackId}
-            isAudioPlaying={isAudioPlaying}
-            onPlayTrack={onPlayTrack}
-            onPlayList={onPlayList}
-            onMountFolder={onMountFolder}
-          />
+          <ChartBoundary className="min-h-[609px] lg:min-h-[453px]">
+            <DailyListeningChart
+              tracks={scopedTracks}
+              trackMap={trackMap}
+              activeGenre={activeGenre}
+              playHistory={playHistory}
+              activePlayingTrackId={activePlayingTrackId}
+              isAudioPlaying={isAudioPlaying}
+              onPlayTrack={onPlayTrack}
+              onPlayList={onPlayList}
+              onMountFolder={onMountFolder}
+            />
+          </ChartBoundary>
         </div>
 
         {/* Weekly Listening Habits (Weekday Hours, 24h Peak Times & Heatmap) */}
@@ -1223,17 +1234,19 @@ export function DashboardView({
           id="dash-section-weekly-habits"
           className={sectionHighlightClass('weekly-habits')}
         >
-          <WeeklyListeningHabitsChart
-            tracks={scopedTracks}
-            trackMap={trackMap}
-            activeGenre={activeGenre}
-            playHistory={playHistory}
-            activePlayingTrackId={activePlayingTrackId}
-            isAudioPlaying={isAudioPlaying}
-            onPlayTrack={onPlayTrack}
-            onPlayList={onPlayList}
-            onMountFolder={onMountFolder}
-          />
+          <ChartBoundary className="min-h-[618px] lg:min-h-[395px]">
+            <WeeklyListeningHabitsChart
+              tracks={scopedTracks}
+              trackMap={trackMap}
+              activeGenre={activeGenre}
+              playHistory={playHistory}
+              activePlayingTrackId={activePlayingTrackId}
+              isAudioPlaying={isAudioPlaying}
+              onPlayTrack={onPlayTrack}
+              onPlayList={onPlayList}
+              onMountFolder={onMountFolder}
+            />
+          </ChartBoundary>
         </div>
 
         {/* Granular Listening Activity Heatmap (D3 7-Day × 24-Hour Matrix) */}
@@ -1241,17 +1254,19 @@ export function DashboardView({
           id="dash-section-listening-heatmap"
           className={sectionHighlightClass('listening-heatmap')}
         >
-          <ListeningActivityHeatmap
-            tracks={scopedTracks}
-            trackMap={trackMap}
-            activeGenre={activeGenre}
-            playHistory={playHistory}
-            activePlayingTrackId={activePlayingTrackId}
-            isAudioPlaying={isAudioPlaying}
-            onPlayTrack={onPlayTrack}
-            onPlayList={onPlayList}
-            onMountFolder={onMountFolder}
-          />
+          <ChartBoundary className="min-h-[872px] lg:min-h-[602px]">
+            <ListeningActivityHeatmap
+              tracks={scopedTracks}
+              trackMap={trackMap}
+              activeGenre={activeGenre}
+              playHistory={playHistory}
+              activePlayingTrackId={activePlayingTrackId}
+              isAudioPlaying={isAudioPlaying}
+              onPlayTrack={onPlayTrack}
+              onPlayList={onPlayList}
+              onMountFolder={onMountFolder}
+            />
+          </ChartBoundary>
         </div>
 
         {/* Most Played Songs & Recent Play History */}
@@ -1295,18 +1310,20 @@ export function DashboardView({
           id="dash-section-tracks-added-trend"
           className={sectionHighlightClass('tracks-added-trend')}
         >
-          <WeeklyTracksAddedChart
-            tracks={scopedTracks}
-            trackGenreMap={allStats.trackGenreMap}
-            activeGenre={activeGenre}
-            activePlayingTrackId={activePlayingTrackId}
-            isAudioPlaying={isAudioPlaying}
-            onPlayTrack={onPlayTrack}
-            onPlayList={onPlayList}
-            onCreatePlaylistFromTracks={onCreatePlaylistFromTracks}
-            onMountFolder={onMountFolder}
-            onPickFilesFallback={onPickFilesFallback}
-          />
+          <ChartBoundary className="min-h-[662px] lg:min-h-[474px]">
+            <WeeklyTracksAddedChart
+              tracks={scopedTracks}
+              trackGenreMap={allStats.trackGenreMap}
+              activeGenre={activeGenre}
+              activePlayingTrackId={activePlayingTrackId}
+              isAudioPlaying={isAudioPlaying}
+              onPlayTrack={onPlayTrack}
+              onPlayList={onPlayList}
+              onCreatePlaylistFromTracks={onCreatePlaylistFromTracks}
+              onMountFolder={onMountFolder}
+              onPickFilesFallback={onPickFilesFallback}
+            />
+          </ChartBoundary>
         </div>
 
         {/* Recently Added Local Files (visible immediately once any files are uploaded/scanned) */}

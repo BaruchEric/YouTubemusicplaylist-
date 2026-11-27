@@ -109,9 +109,11 @@ The push was run against the real YouTube on 2026-11-26 from music.beric.ca: one
 
 ## How the client code is split
 
-`bun run build` writes about fifteen scripts where it used to write one of 1.7 MB.
+`bun run build` writes about twenty scripts where it used to write one of 1.7 MB.
 
-- **Screens.** [`src/components/LazyViews.tsx`](../src/components/LazyViews.tsx) wraps the seven screens in `React.lazy`, so the browser fetches a screen's script the first time that screen opens. The first page load carries the app shell and the dashboard. 1.5 seconds later `fetchAllViews` fetches the other six, so a later click opens at once.
+- **Screens.** [`src/components/LazyViews.tsx`](../src/components/LazyViews.tsx) makes each of the seven screens a `lazyComponent`, so the browser fetches a screen's script the first time that screen opens. The first page load carries the app shell and the dashboard. 1.5 seconds later `fetchAllViews` fetches the other six.
+- **Dashboard charts.** [`src/components/LazyCharts.tsx`](../src/components/LazyCharts.tsx) does the same for the six charts that need Recharts or D3, about 620 kB of script with the libraries. The dashboard draws first with an empty card in each chart's place, sized to the chart's height, and the charts fill in when their scripts arrive. A chart that fails shows "This chart did not load" in its card.
+- **Why not `React.lazy`.** `React.lazy` shows its fallback on the first draw even when the script is already in the browser, and React keeps a fallback on screen for 300 ms. [`src/components/lazyComponent.tsx`](../src/components/lazyComponent.tsx) draws a part at once when its code was fetched ahead, so a screen that `fetchAllViews` fetched opens with no empty frame.
 - **Libraries.** `build.rolldownOptions.output.codeSplitting` in [`vite.config.ts`](../vite.config.ts) puts React, Firebase, Recharts, D3 and the icons in files of their own. Their names change only on an upgrade, so a deploy of app code leaves them in the browser's cache.
 - **A tab left open through a deploy.** The deploy replaces the scripts, and a tab from before it can ask for one that is gone. The server answers `404`, Vite fires `vite:preloadError`, and [`src/utils/staleCode.ts`](../src/utils/staleCode.ts) reloads the page once. It does not reload again within 60 seconds, when the browser is offline, or for the background fetch of the other screens. If the script is still missing after the reload, `ViewBoundary` shows "This screen did not load" with a Reload button in place of that screen, and the sidebar and the player keep working.
 
@@ -172,7 +174,7 @@ Managed by [`src/hooks/useAudioPlayer.ts`](../src/hooks/useAudioPlayer.ts), [`sr
 
 ### `src/components/`
 - **Core Workspace Views**: `DashboardView`, `ScannerView`, `PlaylistView`, `SmartPlaylistView`, `SyncQueueView`, `ScanLogView`, `TransferView`
-- **Screen loading**: `LazyViews` (the seven screens as `React.lazy` components, `fetchAllViews`, and `ViewBoundary`, which shows a message when a screen fails to load)
+- **Screen and chart loading**: `lazyComponent` (a part whose script the browser fetches on its own), `LazyViews` (the seven screens, `fetchAllViews`, `ViewBoundary`), `LazyCharts` (the six dashboard charts, `ChartBoundary`) and `CodeBoundary`, which shows a message in place of a part that fails to load
 - **Navigation & Chrome**: `Sidebar`, `TopBar`, `MiniPlayer`, `ToastContainer`, `DashboardJumpMenu`, `DashboardQuickActionsMenu`
 - **Google Drive & Folder UI**: `GoogleDriveTransferSection`, `FolderMappingsPanel`, `DriveFolderBrowserModal`, `LocalFolderBrowserModal`
 - **Library Maintenance & Editing**: `TrackMatchDrawer`, `BatchTagEditorModal`, `DuplicateFinderPanel`, `AudioIntegrityPanel`, `LibraryCleanupPanel`, `Modals`, `YouTubePushDialog`, `SmartPlaylistModal`, `SmartSearchModal`

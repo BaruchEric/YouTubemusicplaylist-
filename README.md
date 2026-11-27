@@ -113,7 +113,7 @@ npm start
 | Script | Command | Description |
 | --- | --- | --- |
 | `dev` | `tsx server.ts` | Runs Express with Vite middleware in development mode |
-| `build` | `vite build` | Builds the client to `dist/`, one script per screen plus one per library group, and copies `src/assets/` |
+| `build` | `vite build` | Builds the client to `dist/`, one script per screen and dashboard chart plus one per library group, and copies `src/assets/` |
 | `start` | `NODE_ENV=production node server.ts` | Runs the production server, serving `dist/` (run `build` first) |
 | `preview` | `vite preview` | Previews the static Vite production build |
 | `lint` | `tsc --noEmit` | Runs strict TypeScript type-checking |
