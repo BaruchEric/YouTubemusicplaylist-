@@ -11,7 +11,11 @@ import {
   type ShuffleMode,
 } from '../utils/smartShuffle';
 import { saveAudioBlob } from '../utils/storage';
-import type { PrepareFolderRead, ReadTrackAudio } from '../utils/deviceAudio';
+import {
+  describeUnplayable,
+  type PrepareFolderRead,
+  type ReadTrackAudio,
+} from '../utils/deviceAudio';
 import { clearDriveAccessToken, getDriveAccessToken } from '../utils/googleAuth';
 import { downloadDriveAudioBlob, DriveApiError, inferAudioMimeFromName } from '../utils/googleDriveApi';
 import {
@@ -1024,6 +1028,7 @@ export function useAudioPlayer(
         }
 
         playbackSessionRef.current = null;
+        const unplayable = describeUnplayable({ inPickedFolder: hasLocalAudio(track.fileKey) });
         setState((prev) => ({
           ...prev,
           activeTrackId: trackId,
@@ -1033,10 +1038,8 @@ export function useAudioPlayer(
           currentTime: 0,
           duration: track.duration,
           playbackMode: 'none',
-          error:
-            driveFetchError ??
-            'Audio file not cached yet. Re-select your local file or folder to play.',
-          needsRelink: !track.driveFileId,
+          error: driveFetchError ?? unplayable.message,
+          needsRelink: !track.driveFileId && unplayable.offerRelink,
         }));
         return;
       }
@@ -1251,6 +1254,7 @@ export function useAudioPlayer(
       ensureWebAudioGraph,
       ensureTrackLoudness,
       syncDeckGains,
+      hasLocalAudio,
     ]
   );
 

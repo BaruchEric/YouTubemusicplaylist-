@@ -82,3 +82,28 @@ export async function readTrackAudio(
   if (found) sources.memory.set(track.fileKey, found);
   return found;
 }
+
+export interface UnplayableNotice {
+  message: string;
+  /** True when picking the file again is the way to get the song back. */
+  offerRelink: boolean;
+}
+
+/**
+ * What the player says when it found no audio for a song with no Drive file and no video.
+ * `inPickedFolder` is hasAudioOnDevice for the song at that point. A file in memory or a
+ * stored copy would have played, so true means the last scan saw the song in the picked
+ * folder and the read gave nothing: the browser withholds the folder, or the file moved.
+ */
+export function describeUnplayable(song: { inPickedFolder: boolean }): UnplayableNotice {
+  if (song.inPickedFolder) {
+    return {
+      message: 'Folder access needed. Press Play again and allow it, or re-scan if the file moved.',
+      offerRelink: false,
+    };
+  }
+  return {
+    message: 'Audio file not cached yet. Re-select your local file or folder to play.',
+    offerRelink: true,
+  };
+}

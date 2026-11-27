@@ -1,6 +1,7 @@
 /// <reference types="bun" />
 import { describe, expect, test } from 'bun:test';
 import {
+  describeUnplayable,
   hasAudioOnDevice,
   needsFolderRead,
   readTrackAudio,
@@ -158,5 +159,25 @@ describe('readTrackAudio', () => {
     await readTrackAudio(track, made, 'may-ask');
 
     expect(asks).toEqual(['never-ask', 'never-ask', 'may-ask']);
+  });
+});
+
+describe('describeUnplayable', () => {
+  test('asks for the folder when the song is in the picked folder and could not be read', () => {
+    const notice = describeUnplayable({ inPickedFolder: true });
+
+    expect(notice.message).toBe(
+      'Folder access needed. Press Play again and allow it, or re-scan if the file moved.'
+    );
+    expect(notice.offerRelink).toBe(false);
+  });
+
+  test('offers to re-link a song this device holds no audio for', () => {
+    const notice = describeUnplayable({ inPickedFolder: false });
+
+    expect(notice.message).toBe(
+      'Audio file not cached yet. Re-select your local file or folder to play.'
+    );
+    expect(notice.offerRelink).toBe(true);
   });
 });
