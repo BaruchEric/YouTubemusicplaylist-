@@ -8,6 +8,7 @@ import type {
   SyncDeviceProfile,
   SyncEvent,
 } from '../types/music';
+import { guessTrackFieldsFromDrivePath } from './fileTags';
 import { mergeFolderMappingTombstones } from './folderMappings';
 import { parseLibraryTombstones } from './libraryMerge';
 
@@ -1266,6 +1267,43 @@ export async function downloadDriveAudioBlob(
   return rawBlob;
 }
 
+/** The part of fetch a Drive call needs, so a test can stand in for the network. */
+export type DriveFetch = (input: string, init?: RequestInit) => Promise<Response>;
+
+/**
+ * Downloads the bytes of a Drive file from start up to, not including, end. Reading a song's
+ * tags takes its first kilobytes, not the whole file.
+ */
+export async function downloadDriveFileRange(
+  accessToken: string,
+  fileId: string,
+  start: number,
+  end: number,
+  fetchImpl: DriveFetch = fetch,
+  signal?: AbortSignal
+): Promise<ArrayBuffer> {
+  if (end <= start) return new ArrayBuffer(0);
+
+  const res = await fetchImpl(`${DRIVE_FILES_ENDPOINT}/${encodeURIComponent(fileId)}?alt=media`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Range: `bytes=${start}-${end - 1}`,
+    },
+    signal,
+  });
+
+  // The range starts past the last byte, so the file has nothing there.
+  if (res.status === 416) return new ArrayBuffer(0);
+  if (!res.ok) {
+    throw await parseDriveError(res, 'Failed to download part of a file from Google Drive.');
+  }
+
+  const body = await res.arrayBuffer();
+  // A server that ignores Range answers 200 with the file from its first byte.
+  if (res.status !== 206) return body.slice(start, end);
+  return body.byteLength > end - start ? body.slice(0, end - start) : body;
+}
+
 /**
  * Uploads a binary audio file (song) to Google Drive, preserving exact file bytes so every
  * synced device plays the authentic source audio. Files over 5 MB go up as resumable uploads.
@@ -1531,36 +1569,8 @@ export function buildTrackStubFromDriveAudio(
   folderLabel = 'Google Drive'
 ): LocalTrack {
   const ext = file.name.split('.').pop()?.toUpperCase() || 'AUDIO';
-  const baseName = file.name.replace(/\.[^.]+$/, '').trim() || file.name;
-  let cleaned = baseName;
-  let trackNumber: number | null = null;
-
-  const trackPrefix = cleaned.match(/^(\d{1,3})\s*[.\-–_]\s*(.+)$/);
-  if (trackPrefix) {
-    trackNumber = parseInt(trackPrefix[1], 10);
-    cleaned = trackPrefix[2].trim();
-  }
-
-  const effectivePath = (file.folderPath || folderLabel || 'Google Drive').replace(/^\/+|\/+$/g, '');
-  const pathSegments = effectivePath.split('/').filter(Boolean);
-  const leafFolder = pathSegments[pathSegments.length - 1] || folderLabel;
-
-  let artist = 'Unknown Artist';
-  let title = cleaned;
-  let album = leafFolder === 'Google Drive' ? 'Google Drive Library' : leafFolder;
-
-  const dashParts = cleaned.split(/\s+[-–—]\s+/);
-  if (dashParts.length >= 2) {
-    artist = dashParts[0].trim();
-    title = dashParts.slice(1).join(' - ').trim();
-  } else if (pathSegments.length >= 3) {
-    // e.g. Music / Artist / Album / 01 Track.flac
-    artist = pathSegments[pathSegments.length - 2];
-    album = pathSegments[pathSegments.length - 1];
-  } else if (pathSegments.length === 2) {
-    // e.g. Music / Artist / Track.flac
-    artist = pathSegments[1];
-  }
+  const { title, artist, album, trackNumber, effectivePath, leafFolder } =
+    guessTrackFieldsFromDrivePath(file.name, file.folderPath, folderLabel);
 
   const modifiedMs = Date.parse(file.modifiedTime) || Date.now();
   return {
@@ -1569,7 +1579,7 @@ export function buildTrackStubFromDriveAudio(
     fileName: file.name,
     relativePath: `${effectivePath}/${file.name}`,
     folderName: leafFolder,
-    title: title || baseName,
+    title,
     artist,
     album,
     year: '',
