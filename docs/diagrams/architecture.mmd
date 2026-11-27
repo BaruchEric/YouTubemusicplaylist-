@@ -1,0 +1,36 @@
+%%{init: {'theme':'neutral', 'flowchart': {'wrappingWidth': 420, 'nodeSpacing': 40, 'rankSpacing': 110}}}%%
+flowchart LR
+    user(["User"])
+
+    subgraph browser ["The user's browser"]
+        direction TB
+        app["CrateSync web app<br/>React single-page app"]
+        store[("Browser storage<br/>songs, playlists, matched video IDs,<br/>YouTube playlist ID and link")]
+        tokens["Google access tokens<br/>held in memory only,<br/>dropped after 50 minutes"]
+    end
+
+    subgraph google ["Google services"]
+        direction TB
+        auth["Firebase Authentication<br/>Google sign-in and consent window"]
+        yt["YouTube Data API v3<br/>playlists.insert<br/>playlistItems.list, insert, update, delete"]
+        drive["Google Drive API v3<br/>optional copy of the library"]
+    end
+
+    subgraph host ["CrateSync server at music.beric.ca"]
+        direction TB
+        gate["Cloudflare and a sign-in gate"]
+        server["Express server<br/>sends the app files,<br/>stores no user data"]
+    end
+
+    gemini["Gemini API at Google<br/>optional song tag lookups"]
+
+    user -->|"builds a playlist,<br/>clicks Push to YouTube"| app
+    app -->|"saves the library"| store
+    auth -->|"access token"| tokens
+    app -->|"asks for the youtube scope<br/>when the user clicks"| auth
+    app ==>|"HTTPS with the user's token:<br/>create a private playlist, read its entries,<br/>add, move and remove videos"| yt
+    app -.->|"optional: library file and audio"| drive
+    gate -->|"app files"| app
+    gate --- server
+    app -.->|"optional: file names and tags"| server
+    server -.->|"passes lookups on"| gemini

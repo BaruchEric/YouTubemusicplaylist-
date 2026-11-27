@@ -1,0 +1,26 @@
+%%{init: {'theme':'neutral', 'flowchart': {'wrappingWidth': 460}}}%%
+flowchart TD
+    opened(["User opens a playlist in CrateSync"])
+    press["User clicks Push to YouTube"]
+    review["Review window shows how many songs<br/>will be added, removed and moved,<br/>with links to the terms and the privacy policy"]
+    confirm{"User clicks<br/>Connect YouTube and push?"}
+    cancel(["Nothing is sent"])
+    consent["Google's window: the user picks an account<br/>and allows the youtube scope"]
+    linked{"Playlist already linked<br/>to a YouTube playlist?"}
+    create["Create a private playlist<br/>playlists.insert"]
+    read["Read its entries: ID, video ID, position<br/>playlistItems.list"]
+    add["Add the matched songs YouTube lacks,<br/>each at its place<br/>playlistItems.insert"]
+    remove["Remove songs an earlier push added<br/>that left the playlist<br/>playlistItems.delete"]
+    move["Move songs that are out of order<br/>playlistItems.update"]
+    quota{"Daily quota reached<br/>before the end?"}
+    stopped(["Push stops and says what is left.<br/>The next push carries on from there"])
+    done(["Finished window sums up the push<br/>and links to the playlist in YouTube Music.<br/>The songs read In sync"])
+
+    opened --> press --> review --> confirm
+    confirm -->|"no, Cancel"| cancel
+    confirm -->|yes| consent --> linked
+    linked -->|no| create --> add
+    linked -->|yes| read --> add
+    add --> remove --> move --> quota
+    quota -->|yes| stopped
+    quota -->|no| done

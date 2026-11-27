@@ -155,7 +155,10 @@ Classifies tracks into canonical primary genres and subgenres.
 ├── deploy/                      # systemd unit and the deploy script for music.beric.ca
 ├── docs/
 │   ├── ARCHITECTURE.md          # Detailed data model, sync protocol & module reference
-│   └── DEPLOY.md                # How the app is deployed and what makes the hostname work
+│   ├── DEPLOY.md                # How the app is deployed and what makes the hostname work
+│   ├── YOUTUBE_AUDIT.md         # What Google was told on the YouTube quota form
+│   ├── diagrams/                # Architecture and push flow diagrams, Mermaid source and PNG
+│   └── privacy.html, terms.html # Public pages, served by GitHub Pages with index.html and site.css
 └── src/
     ├── App.tsx                  # Root workspace state, ingestion, sync & view routing
     ├── types/music.ts           # Core domain types
