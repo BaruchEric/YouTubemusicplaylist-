@@ -227,7 +227,7 @@ describe('mergeLibraryForPush', () => {
   });
 
   test('writes one record for a file whose name spells an accent differently on each side', () => {
-    // macOS hands back "é" as "e" plus a combining accent. Google Drive sends one character.
+    // A folder on a Mac can hand back "é" as "e" plus a combining accent. The Drive listing sends one character.
     const mine = makeTrack({ id: 'mine', fileKey: 'music/ete\u0301.mp3::1000', fileName: 'Ete\u0301.mp3' });
     const theirs = makeTrack({ id: 'theirs', fileKey: 'gdrive::d1', fileName: 'Et\u00e9.mp3', driveFileId: 'd1' });
     const result = mergeLibraryForPush({

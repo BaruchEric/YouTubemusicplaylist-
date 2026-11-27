@@ -1,7 +1,8 @@
 /**
  * Keys for telling whether two listings name the same file.
  *
- * macOS hands back "é" as "e" plus a combining accent, and Google Drive sends one character.
+ * A folder on a Mac can hand back "é" as "e" plus a combining accent. The folder Google Drive
+ * for desktop keeps does, and the Drive listing sends one character for the same file.
  * A name is folded to one spelling and to lower case before two listings are compared.
  */
 export function foldFileName(name: string): string {

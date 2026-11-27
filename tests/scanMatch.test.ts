@@ -149,7 +149,7 @@ describe('createScanMatcher', () => {
     });
   });
 
-  // macOS hands back "é" as "e" plus a combining accent. Google Drive sends one character.
+  // A folder on a Mac can hand back "é" as "e" plus a combining accent. The Drive listing sends one character.
   test('links a Drive song to a file whose name spells an accent with two characters', () => {
     const song = driveSong('d1', 'Google Drive/Music/Joe Dassin/Vol.1', "01 L'Et\u00e9 Indien.mp3");
     const matcher = createScanMatcher([song], noAudio);

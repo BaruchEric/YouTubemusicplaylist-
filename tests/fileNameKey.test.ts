@@ -2,7 +2,7 @@
 import { describe, expect, test } from 'bun:test';
 import { foldFileName, nameSizeKey } from '../src/utils/fileNameKey';
 
-// macOS hands back "é" as "e" plus a combining accent. Google Drive sends one character.
+// A folder on a Mac can hand back "é" as "e" plus a combining accent. The Drive listing sends one character.
 const ONE_CHARACTER = "01 L'Eté Indien.mp3";
 const TWO_CHARACTERS = "01 L'Eté Indien.mp3";
 
