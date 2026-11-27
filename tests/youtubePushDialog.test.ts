@@ -27,6 +27,7 @@ function finishedWindow(playlist: YouTubePushOutcome['playlist']): string {
     leftAlone: 0,
     unavailable: [],
     notSent: 0,
+    onYouTube: ['dQw4w9WgXcQ'],
     stopped: null,
     record: null,
   };

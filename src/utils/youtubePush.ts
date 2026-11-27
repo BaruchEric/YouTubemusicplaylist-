@@ -231,6 +231,11 @@ export interface YouTubePushOutcome {
   unavailable: string[];
   /** Songs the push did not get to before it stopped. */
   notSent: number;
+  /**
+   * This playlist's videos that the YouTube playlist holds when the push ends, whether this
+   * push added them or they were there before it.
+   */
+  onYouTube: string[];
   /** Why the push ended early, or null when it finished. */
   stopped: { failure: YouTubeFailure | 'cancelled'; message: string } | null;
   /** The record to store on the playlist. Null means leave the stored one as it is. */
@@ -336,6 +341,7 @@ export async function pushPlaylistToYouTube(input: {
     leftAlone: 0,
     unavailable: [],
     notSent: wanted.length,
+    onYouTube: [],
     stopped: null,
     record: null,
   };
@@ -473,6 +479,8 @@ export async function pushPlaylistToYouTube(input: {
   }
 
   const videosNow = entries.map((entry) => entry.videoId);
+  const wantedVideos = new Set(wanted);
+  outcome.onYouTube = [...new Set(videosNow.filter((videoId) => wantedVideos.has(videoId)))];
   const left = planYouTubeOrder({ wanted, remote: videosNow }).moves.length;
   if (sortedByYouTube) outcome.order = { state: 'sorted-by-youtube' };
   else if (left > 0) outcome.order = { state: 'out-of-order', left };
@@ -495,14 +503,45 @@ export async function pushPlaylistToYouTube(input: {
 }
 
 /**
+ * The playlist's record of what is synced, after a push. A song YouTube now holds counts as
+ * synced, and so does a song Apply Sync recorded earlier. A removal that was pending is done
+ * once the push finishes. A push that stopped keeps the removals it did not get to.
+ */
+function syncedAfterPush(
+  playlist: Playlist,
+  outcome: YouTubePushOutcome,
+  library: ReadonlyMap<string, LocalTrack>
+): string[] {
+  const onYouTube = new Set(outcome.onYouTube);
+  const removed = new Set(outcome.removed);
+  const videoOf = (trackId: string) => library.get(trackId)?.youtubeVideoId ?? null;
+  const holds = (videos: ReadonlySet<string>, trackId: string) => {
+    const videoId = videoOf(trackId);
+    return videoId !== null && videos.has(videoId);
+  };
+
+  const wasSynced = new Set(playlist.syncedTrackIds);
+  const inPlaylist = new Set(playlist.trackIds);
+  const synced = playlist.trackIds.filter((id) => wasSynced.has(id) || holds(onYouTube, id));
+  if (!outcome.stopped) return synced;
+
+  const removalsLeft = playlist.syncedTrackIds.filter(
+    (id) => !inPlaylist.has(id) && !holds(removed, id)
+  );
+  return [...synced, ...removalsLeft];
+}
+
+/**
  * The playlist as it is stored after a push: linked to the YouTube playlist the push created,
- * and carrying the record of what CrateSync has put there. A push that never reached a
- * YouTube playlist changes nothing.
+ * carrying the record of what CrateSync has put there, and with the songs YouTube now holds
+ * marked as synced. `library` is every track by id. A push that never reached a YouTube
+ * playlist changes nothing.
  */
 export function playlistAfterPush(
   playlist: Playlist,
   outcome: YouTubePushOutcome,
-  now: number
+  now: number,
+  library: ReadonlyMap<string, LocalTrack>
 ): Playlist {
   if (!outcome.record) return playlist;
   return {
@@ -511,6 +550,8 @@ export function playlistAfterPush(
       ? buildYouTubeMusicPlaylistUrl(outcome.playlist.id)
       : playlist.youtubePlaylistUrl,
     youtubePush: outcome.record,
+    syncedTrackIds: syncedAfterPush(playlist, outcome, library),
+    lastSyncedAt: outcome.stopped ? playlist.lastSyncedAt : now,
     updatedAt: now,
   };
 }

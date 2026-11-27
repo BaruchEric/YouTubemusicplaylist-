@@ -12,6 +12,7 @@ import {
   type YouTubePushOutcome,
   type YouTubePushProgress,
 } from '../src/utils/youtubePush';
+import type { LocalTrack } from '../src/types/music';
 import { makePlaylist, makeTrack } from './factories';
 
 const PLAYLIST_URL = 'https://music.youtube.com/playlist?list=PL-linked-playlist';
@@ -312,6 +313,22 @@ describe('pushPlaylistToYouTube', () => {
     expect(outcome.removed).toEqual(['vid-old']);
     expect(outcome.alreadyThere).toBe(1);
     expect(outcome.record).toEqual({ playlistId: 'PL-linked-playlist', videoIds: ['vid-a', 'vid-b'], pushedAt: 900 });
+  });
+
+  test('lists the playlist songs YouTube holds when the push ends', async () => {
+    const youtube = fakeYouTube({
+      remote: [item('vid-a'), item('vid-by-hand')],
+      failOn: { 'insert vid-c': [fail('video-missing')] },
+    });
+
+    const outcome = await pushPlaylistToYouTube({
+      api: youtube.api,
+      playlist: makePlaylist({ id: 'p', youtubePlaylistUrl: PLAYLIST_URL }),
+      tracks: [matched('a', 'vid-a'), matched('b', 'vid-b'), matched('c', 'vid-c')],
+      now: 1,
+    });
+
+    expect([...outcome.onYouTube].sort()).toEqual(['vid-a', 'vid-b']);
   });
 
   test('skips a video YouTube no longer has and sends the rest', async () => {
@@ -738,6 +755,7 @@ describe('describeYouTubePush', () => {
       leftAlone: 0,
       unavailable: [],
       notSent: 0,
+      onYouTube: [],
       stopped: null,
       record: null,
       ...overrides,
@@ -800,12 +818,15 @@ describe('playlistAfterPush', () => {
     leftAlone: 0,
     unavailable: [],
     notSent: 0,
+    onYouTube: ['vid-a'],
     stopped: null,
     record: { playlistId: 'PL-created-playlist', videoIds: ['vid-a'], pushedAt: 40 },
   };
+  const stopped: YouTubePushOutcome['stopped'] = { failure: 'quota', message: 'limit reached' };
+  const library = (...tracks: LocalTrack[]) => new Map(tracks.map((track) => [track.id, track]));
 
   test('links the playlist to the one the push created and stores the record', () => {
-    const after = playlistAfterPush(makePlaylist({ id: 'p', updatedAt: 1 }), finished, 40);
+    const after = playlistAfterPush(makePlaylist({ id: 'p', updatedAt: 1 }), finished, 40, library());
     expect(after.youtubePlaylistUrl).toBe('https://music.youtube.com/playlist?list=PL-created-playlist');
     expect(after.youtubePush).toEqual(finished.record ?? undefined);
     expect(after.updatedAt).toBe(40);
@@ -817,7 +838,8 @@ describe('playlistAfterPush', () => {
     const after = playlistAfterPush(
       playlist,
       { ...finished, playlist: { id: 'PL-linked-playlist', created: false }, record },
-      40
+      40,
+      library()
     );
     expect(after.youtubePlaylistUrl).toBe(PLAYLIST_URL);
     expect(after.youtubePush).toEqual(record);
@@ -825,7 +847,89 @@ describe('playlistAfterPush', () => {
 
   test('returns the playlist untouched when the push never reached a YouTube playlist', () => {
     const playlist = makePlaylist({ id: 'p', updatedAt: 1 });
-    const after = playlistAfterPush(playlist, { ...finished, playlist: null, record: null }, 40);
+    const after = playlistAfterPush(
+      playlist,
+      { ...finished, playlist: null, record: null },
+      40,
+      library()
+    );
     expect(after).toBe(playlist);
+  });
+
+  test('marks the songs YouTube now holds as synced', () => {
+    const playlist = makePlaylist({ id: 'p', trackIds: ['a', 'b'] });
+    const after = playlistAfterPush(
+      playlist,
+      { ...finished, onYouTube: ['vid-a', 'vid-b'] },
+      40,
+      library(matched('a', 'vid-a'), matched('b', 'vid-b'))
+    );
+    expect(after.syncedTrackIds).toEqual(['a', 'b']);
+    expect(after.lastSyncedAt).toBe(40);
+  });
+
+  test('leaves a song that did not reach YouTube pending', () => {
+    const playlist = makePlaylist({ id: 'p', trackIds: ['a', 'unmatched', 'c'] });
+    const after = playlistAfterPush(
+      playlist,
+      finished,
+      40,
+      library(matched('a', 'vid-a'), makeTrack({ id: 'unmatched' }), matched('c', 'vid-c'))
+    );
+    expect(after.syncedTrackIds).toEqual(['a']);
+  });
+
+  test('keeps a song Apply Sync recorded earlier, matched or not', () => {
+    const playlist = makePlaylist({
+      id: 'p',
+      trackIds: ['a', 'unmatched'],
+      syncedTrackIds: ['unmatched'],
+    });
+    const after = playlistAfterPush(
+      playlist,
+      finished,
+      40,
+      library(matched('a', 'vid-a'), makeTrack({ id: 'unmatched' }))
+    );
+    expect(after.syncedTrackIds).toEqual(['a', 'unmatched']);
+  });
+
+  test('a stopped push marks what it sent and keeps the last synced time', () => {
+    const playlist = makePlaylist({ id: 'p', trackIds: ['a', 'b'], lastSyncedAt: 5 });
+    const after = playlistAfterPush(
+      playlist,
+      { ...finished, stopped, notSent: 1 },
+      40,
+      library(matched('a', 'vid-a'), matched('b', 'vid-b'))
+    );
+    expect(after.syncedTrackIds).toEqual(['a']);
+    expect(after.lastSyncedAt).toBe(5);
+  });
+
+  test('a finished push clears the removals that were pending', () => {
+    const playlist = makePlaylist({ id: 'p', trackIds: ['a'], syncedTrackIds: ['a', 'gone'] });
+    const after = playlistAfterPush(
+      playlist,
+      { ...finished, removed: ['vid-gone'] },
+      40,
+      library(matched('a', 'vid-a'), matched('gone', 'vid-gone'))
+    );
+    expect(after.syncedTrackIds).toEqual(['a']);
+  });
+
+  test('a stopped push keeps a removal it did not get to', () => {
+    const playlist = makePlaylist({ id: 'p', trackIds: ['a'], syncedTrackIds: ['a', 'gone'] });
+    const tracks = library(matched('a', 'vid-a'), matched('gone', 'vid-gone'));
+
+    const notReached = playlistAfterPush(playlist, { ...finished, stopped }, 40, tracks);
+    expect(notReached.syncedTrackIds).toEqual(['a', 'gone']);
+
+    const reached = playlistAfterPush(
+      playlist,
+      { ...finished, stopped, removed: ['vid-gone'] },
+      40,
+      tracks
+    );
+    expect(reached.syncedTrackIds).toEqual(['a']);
   });
 });

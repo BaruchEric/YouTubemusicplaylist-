@@ -1722,7 +1722,9 @@ export default function App() {
     if (outcome.stopped?.failure === 'auth') clearYouTubeAccessToken();
 
     setPlaylists((prev) =>
-      prev.map((pl) => (pl.id === playlistId ? playlistAfterPush(pl, outcome, now) : pl))
+      prev.map((pl) =>
+        pl.id === playlistId ? playlistAfterPush(pl, outcome, now, trackMap) : pl
+      )
     );
 
     if (outcome.inserted.length + outcome.removed.length + outcome.moved.length > 0) {
