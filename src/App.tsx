@@ -77,6 +77,7 @@ import {
   type LocalLibraryForPush,
 } from './utils/libraryMerge';
 import { planPlaylistImport } from './utils/playlistImport';
+import { createScanMatcher, linkDriveSongToLocalFile, type ScannedFile } from './utils/scanMatch';
 import { countDeviceFiles } from './utils/trackSource';
 import {
   inspectAudioBlobIntegrity,
@@ -674,17 +675,14 @@ export default function App() {
       try {
         const now = Date.now();
         const existingByKey = new Map<string, LocalTrack>();
-        const existingByNameSize = new Map<string, LocalTrack>();
-        // Drive tracks keep a gdrive:: fileKey but sync rewrites relativePath to this device's
-        // mapped folder, so match on path + size too or a scan re-imports them as new tracks.
-        const existingByPathSize = new Map<string, LocalTrack>();
         tracksRef.current.forEach((t) => {
           existingByKey.set(t.fileKey, t);
-          existingByNameSize.set(`${t.fileName.toLowerCase()}::${t.fileSize}`, t);
-          if (t.fileSize > 0) {
-            existingByPathSize.set(`${t.relativePath.toLowerCase()}::${t.fileSize}`, t);
-          }
         });
+        const matcher = createScanMatcher(
+          tracksRef.current,
+          (fileKey) => fileMapRef.current.has(fileKey) || storedAudioKeysRef.current.has(fileKey)
+        );
+        let linkedDriveCount = 0;
 
         const seenKeys = new Set<string>();
         const newlyParsed: LocalTrack[] = [];
@@ -694,19 +692,17 @@ export default function App() {
         for (let i = 0; i < audioEntries.length; i++) {
           const { file, relativePath } = audioEntries[i];
           const computedFileKey = `${relativePath.toLowerCase()}::${file.size}`;
-          const nameSizeCandidate = existingByNameSize.get(
-            `${file.name.toLowerCase()}::${file.size}`
-          );
-          const canRelinkByNameSize =
-            Boolean(nameSizeCandidate) &&
-            !relativePath.includes('/') &&
-            (nameSizeCandidate!.isMissingOnDevice ||
-              (!fileMapRef.current.has(nameSizeCandidate!.fileKey) &&
-                !storedAudioKeysRef.current.has(nameSizeCandidate!.fileKey)));
+          const scanned: ScannedFile = { name: file.name, size: file.size, relativePath };
+          const match = matcher.match(scanned);
+          // A Drive song with no local file takes this file's path, so the next scan knows it
+          // and the scanned folder's rules cover it.
           const existing =
-            existingByKey.get(computedFileKey) ??
-            existingByPathSize.get(computedFileKey) ??
-            (canRelinkByNameSize ? nameSizeCandidate : undefined);
+            match.kind === 'new'
+              ? undefined
+              : match.kind === 'drive-copy'
+                ? linkDriveSongToLocalFile(match.track, scanned)
+                : match.track;
+          if (match.kind === 'drive-copy') linkedDriveCount++;
           const targetKey = existing ? existing.fileKey : computedFileKey;
 
           seenKeys.add(targetKey);
@@ -957,6 +953,11 @@ export default function App() {
           }
           if (restoredCount > 0) {
             parts.push(`Restored ${restoredCount} previously missing`);
+          }
+          if (linkedDriveCount > 0) {
+            parts.push(
+              `Linked ${linkedDriveCount} Drive song${linkedDriveCount === 1 ? '' : 's'} to ${linkedDriveCount === 1 ? 'its' : 'their'} local file${linkedDriveCount === 1 ? '' : 's'}`
+            );
           }
           if (totalMissingInFolder > 0) {
             parts.push(`${totalMissingInFolder} missing on device`);
