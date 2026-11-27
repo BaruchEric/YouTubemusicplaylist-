@@ -54,7 +54,7 @@ The legal name, the address and the contact email are on the form and stay out o
 
 The 37 songs were linked on 26 November 2026 by reading the liked-videos playlist, which costs 1 unit per 50 videos and no search. The 2,568 are the songs in Drive. A scan of the local music folder later that day added 5 files Drive lacks: two exact copies of songs, two stems and one long recording. The form keeps the 2,568 because none of the 5 is a song to look up.
 
-After the form went out the same evening, the two exact copies were removed and a first search of 85 songs ran on the default quota, 8,500 units. It proposed 65 videos and 56 were applied after review. The app then counted 2,571 tracks, 93 with a video and 2,478 without.
+After the form went out the same evening, the two exact copies were removed and a first search of 85 songs ran on the default quota, 8,500 units. It proposed 65 videos and 56 were applied after review. The app then counted 2,571 tracks, 93 with a video and 2,478 without. Fifteen of the songs that search missed were then matched from a pasted list of links, which calls no API, leaving 108 with a video and 2,463 without.
 
 ## search.list justification, as sent
 
