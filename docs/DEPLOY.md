@@ -4,6 +4,27 @@ CrateSync runs at https://music.beric.ca. The server is `cratesync.service` on m
 
 The library stays in each browser. The server holds no user data: it serves the built app and the two AI endpoints.
 
+## What music.beric.ca serves now
+
+The site serves the Bun and React web app at commit 95a2adc, deployed on 2026-11-26. Commit 9e95771 replaced that app on main with the Kotlin Multiplatform project, and the web app's source (`src/`, `server.ts`, `bun.lock`) is no longer on main.
+
+Main has nothing to deploy to music.beric.ca yet:
+
+- Its Ktor server (`server/`) answers `/api/health` and the two AI endpoints and serves no page.
+- Its web target (`composeApp` wasmJs) is a shell. In `shared/src/wasmJsMain/.../WasmPlatformAdapters.kt` the folder picker returns nothing, the audio engine plays no sound, there is no database, and Google sign-in throws.
+
+So `deploy/deploy-mini.sh` refuses to run on a tree without `server.ts` and `bun.lock`. Without that check, its `rsync --delete` would remove `server.ts` on the mini, and the site would go down at the next restart of the unit.
+
+To change the live site, deploy a commit that still has the web app, from a worktree:
+
+```bash
+git worktree add ../cratesync-web 95a2adc
+cd ../cratesync-web && bun run deploy
+cd - && git worktree remove ../cratesync-web
+```
+
+The rest of this page describes that web app's deploy.
+
 ## Deploy a new version
 
 ```bash

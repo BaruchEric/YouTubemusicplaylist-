@@ -16,6 +16,16 @@ DEST=/opt/stacks/cratesync
 PORT=4420
 UNIT=cratesync.service
 
+# Main became a Kotlin Multiplatform project in 9e95771 and no longer holds the
+# Bun web app. The rsync below runs with --delete before anything is built, so
+# copying that tree would remove server.ts on the mini, and music.beric.ca would
+# go down at the next restart of the unit.
+if [ ! -f server.ts ] || [ ! -f bun.lock ]; then
+  echo "This tree has no Bun web app (server.ts and bun.lock), so this script has nothing to deploy." >&2
+  echo "music.beric.ca keeps serving the last web build. docs/DEPLOY.md says how to redeploy it." >&2
+  exit 1
+fi
+
 if [ -n "$(git status --porcelain)" ]; then
   echo "The working tree has uncommitted changes. Commit them first, so what runs is a commit." >&2
   exit 1
