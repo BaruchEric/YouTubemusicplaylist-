@@ -13,8 +13,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.swing.Swing
 import kotlinx.coroutines.withContext
 import java.awt.Desktop
+import java.awt.KeyboardFocusManager
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.net.URI
@@ -171,15 +173,16 @@ class DesktopFileSystem : PlatformFileSystem {
     private val mountedRoots = mutableMapOf<String, File>()
     private val offlineDir = File(System.getProperty("user.home"), ".cratesync/offline_audio").apply { mkdirs() }
 
-    override suspend fun pickAndScanFolder(): FolderScanBatch? = withContext(Dispatchers.IO) {
-        val chooser = JFileChooser().apply {
-            fileSelectionMode = JFileChooser.DIRECTORIES_ONLY
-            dialogTitle = "Select Local Music Folder"
-        }
-        val res = chooser.showOpenDialog(null)
-        if (res != JFileChooser.APPROVE_OPTION) return@withContext null
-        val dir = chooser.selectedFile ?: return@withContext null
-        rescanFolder(dir.name, dir.absolutePath)
+    override suspend fun pickAndScanFolder(): FolderScanBatch? {
+        val dir = withContext(Dispatchers.Swing) {
+            val chooser = JFileChooser().apply {
+                fileSelectionMode = JFileChooser.DIRECTORIES_ONLY
+                dialogTitle = "Select Local Music Folder"
+            }
+            val owner = KeyboardFocusManager.getCurrentKeyboardFocusManager().activeWindow
+            if (chooser.showOpenDialog(owner) == JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
+        } ?: return null
+        return rescanFolder(dir.name, dir.absolutePath)
     }
 
     override suspend fun rescanFolder(folderName: String, nativePathOrUri: String): FolderScanBatch? = withContext(Dispatchers.IO) {
