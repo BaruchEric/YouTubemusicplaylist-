@@ -65,11 +65,11 @@ class SmartDiscoveryAndAudioDspTest {
         val stats = mapOf("1" to TrackPlayStats(playCount = 12, completedCount = 12))
 
         val losslessPreset = SmartPlaylists.fromPreset(SmartPlaylists.PRESETS.first { it.id == "lossless-vault" }, now = 10_000L)
-        val matched = SmartPlaylists.evaluate(losslessPreset, listOf(t1, t2), stats, now = 10_000L)
+        val matched = SmartPlaylists.evaluate(losslessPreset, listOf(t1, t2), stats, nowMs = 10_000L)
         assertEquals(listOf("1"), matched.map { it.id })
 
-        val searchResults = SmartSearch.evaluateTracks(
-            rawQuery = "format:flac year:2005..2012 duration>5m strobe",
+        val (_, searchResults) = SmartSearch.evaluateTracks(
+            rawQuery = "format:flac year:2005-2012 duration:>5m strobe",
             tracks = listOf(t1, t2),
             playStats = stats,
         )
@@ -86,8 +86,8 @@ class SmartDiscoveryAndAudioDspTest {
         val a1 = track("a1", "Track 1", "Daft Punk", "Discovery", trackNumber = 1)
         val a2 = track("a2", "Track 2", "Daft Punk", "Discovery", trackNumber = 2)
         val desc = AudioTransitions.describeUpcoming(
-            current = a1,
-            next = a2,
+            currentTrack = a1,
+            nextTrack = a2,
             isShuffled = false,
             settings = PlaybackTransitionSettings(crossfadeSeconds = 5.0, gaplessAlbumContinuity = true),
         )
@@ -99,17 +99,17 @@ class SmartDiscoveryAndAudioDspTest {
         val sampleRate = 48_000
         val frames = sampleRate // 1 second 1kHz sine at 0.25 amplitude
         val sine = FloatArray(frames) { i -> (0.25 * sin(2.0 * PI * 1000.0 * i / sampleRate)).toFloat() }
-        val measured = ReplayGainEngine.analyzePcmLoudness(listOf(sine, sine), sampleRate, now = 1000L, album = "Test Album")
+        val measured = ReplayGainEngine.analyzePcmLoudness(listOf(sine, sine), sampleRate, analyzedAt = 1000L, album = "Test Album")
         assertTrue(measured.integratedLufs < -10.0 && measured.integratedLufs > -25.0)
         assertTrue(measured.peak in 0.24..0.26)
 
         val hotTrack = TrackLoudnessData(integratedLufs = -24.0, peak = 0.95, analyzedAt = 1000L, album = "Test Album")
         val adj = ReplayGainEngine.computeAdjustment(
             trackKey = "k1",
-            album = "Test Album",
+            trackAlbum = "Test Album",
             cache = mapOf("k1" to hotTrack),
             settings = ReplayGainSettings(mode = ReplayGainMode.TRACK, targetLufs = -14, preampDb = 0.0, preventClipping = true),
-            trackAlbumByKey = mapOf("k1" to "Test Album"),
+            libraryAlbumLookup = mapOf("k1" to "Test Album"),
         )
         assertNotNull(adj)
         assertTrue(adj.clippingPrevented)

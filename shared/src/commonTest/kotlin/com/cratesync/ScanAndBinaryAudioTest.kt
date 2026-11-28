@@ -49,6 +49,7 @@ class ScanAndBinaryAudioTest {
             addedAt = 1000L,
             lastSeenAt = 1000L,
             driveFileId = "gfile123",
+            drivePath = "Google Drive",
             isMissingOnDevice = true,
         )
         val matcher = ScanMatcher(listOf(driveStub)) { false }
@@ -131,13 +132,13 @@ class ScanAndBinaryAudioTest {
         )
         val groups = DuplicateDetector.findDuplicateGroups(listOf(mp3, flac))
         assertEquals(1, groups.size)
-        assertEquals("t-flac", groups.first().recommendedKeeperId)
+        assertEquals("t-flac", groups.first().keeper.id)
 
         val pl = Playlist("p1", "Chill", createdAt = 1000L, updatedAt = 1000L, trackIds = listOf("t-mp3"))
         val res = DuplicateDetector.removeDuplicatesWithRemap(
             tracks = listOf(mp3, flac),
             playlists = listOf(pl),
-            duplicateToKeeper = mapOf("t-mp3" to "t-flac"),
+            duplicateToKeeperId = mapOf("t-mp3" to "t-flac"),
             now = 2000L,
         )
         assertEquals(listOf("t-flac"), res.remainingTracks.map { it.id })

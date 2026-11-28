@@ -52,7 +52,7 @@ class YouTubeEnginesTest {
             YouTubeBulkMatch.scoreCandidate(original.title, original.artist, original.album, topicCandidate),
         )
         val picked = YouTubeBulkMatch.pickSearchResult(original, listOf(acousticCandidate, topicCandidate))
-        assertEquals("vid-top", picked?.videoId)
+        assertEquals("vid-top", picked?.candidate?.videoId)
     }
 
     @Test
@@ -69,7 +69,7 @@ class YouTubeEnginesTest {
             remote = listOf("A", "C", "B", "D"),
         )
         assertEquals(1, orderPlan.moves.size)
-        assertTrue(orderPlan.moves.first().first in setOf("B", "C"))
+        assertTrue(orderPlan.moves.first() in setOf("B", "C"))
     }
 
     @Test

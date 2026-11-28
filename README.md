@@ -28,7 +28,7 @@ Copy `.env.example` and configure server-side environment variables when running
 
 ## Build & Run Commands
 
-Requires JDK 17+ and Gradle 8.12+ (or a local Gradle wrapper):
+Requires JDK 17+. The Gradle wrapper in the repo (`./gradlew`) downloads Gradle 8.13.
 
 ```bash
 # Run shared multiplatform unit tests
@@ -48,6 +48,12 @@ Requires JDK 17+ and Gradle 8.12+ (or a local Gradle wrapper):
 ```
 
 For **iOS**, build the `ComposeApp` framework (`./gradlew :composeApp:linkDebugFrameworkIosSimulatorArm64`) and open `iosApp/` in Xcode.
+
+Known gaps (2026-11-27):
+
+- The Android build fails at `checkDebugAarMetadata`. Compose Multiplatform 1.12 needs Android Gradle plugin 9.1 or later, and the project pins 8.11.1. Moving to AGP 9 also needs Gradle 9 and its new Kotlin Multiplatform plugin layout.
+- The iOS targets are `iosArm64` and `iosSimulatorArm64`. Compose Multiplatform 1.12 publishes nothing for `iosX64`, so Intel simulators are not supported.
+- The web target is a shell: the folder picker returns nothing, the audio engine plays no sound, there is no database, and Google sign-in throws. music.beric.ca still serves the earlier React app, as `docs/DEPLOY.md` explains.
 
 ## Privacy & Policies
 
