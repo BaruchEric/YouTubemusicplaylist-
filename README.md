@@ -51,7 +51,7 @@ For **iOS**, build the `ComposeApp` framework (`./gradlew :composeApp:linkDebugF
 
 Known gaps (2026-11-27):
 
-- The Android build fails at `checkDebugAarMetadata`. Compose Multiplatform 1.12 needs Android Gradle plugin 9.1 or later, and the project pins 8.11.1. Moving to AGP 9 also needs Gradle 9 and its new Kotlin Multiplatform plugin layout.
+- The Android build fails at `checkDebugAarMetadata`. Compose Multiplatform 1.12 needs Android Gradle plugin 9.1 or later, and the project pins 8.11.1.
 - The iOS targets are `iosArm64` and `iosSimulatorArm64`. Compose Multiplatform 1.12 publishes nothing for `iosX64`, so Intel simulators are not supported.
 - The web target is a shell: the folder picker returns nothing, the audio engine plays no sound, there is no database, and Google sign-in throws. music.beric.ca still serves the earlier React app, as `docs/DEPLOY.md` explains.
 
